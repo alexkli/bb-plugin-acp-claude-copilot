@@ -1,0 +1,53 @@
+{
+  "name": "bb-plugin-acp-claude-copilot",
+  "version": "0.1.0",
+  "description": "Run Claude Code threads over ACP on your GitHub Copilot subscription, including the GPT, Gemini and Grok models Copilot offers.",
+  "keywords": [
+    "bb-plugin",
+    "claude-code",
+    "github-copilot",
+    "copilot",
+    "copilot-api",
+    "acp",
+    "provider"
+  ],
+  "license": "MIT",
+  "author": "Alexander Klimetschek",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexkli/bb-plugin-acp-claude-copilot.git"
+  },
+  "type": "module",
+  "engines": {
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Claude Copilot ACP provider",
+    "description": "Run Claude Code threads over ACP on your GitHub Copilot subscription, including the GPT, Gemini and Grok models Copilot offers.",
+    "branding": {
+      "icon": "./assets/logo.svg"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx"
+  },
+  "dependencies": {
+    "@jeffreycao/copilot-api": "2.9.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "better-sqlite3": "^12.11.1",
+    "hono": "^4.13.18",
+    "typescript": "^5.7.0"
+  },
+  "scripts": {
+    "build": "bb plugin build .",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node --test test/"
+  }
+}

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# bb ACP agent entry point: Claude Code on GitHub Copilot, served over ACP by
+# @agentclientprotocol/claude-agent-acp, behind claude-copilot-acp-proxy.mjs
+# (next to this script). The proxy makes sure the plugin's own copilot-api
+# runs and points Claude Code at it (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN).
+# The bb plugin registers this script in bb's provider-acp customAgents (id
+# "claude-copilot", provider acp-claude-copilot) and passes its settings as the
+# variables below.
+#
+# stdout is the ACP channel: never print anything to it.
+#
+# Configuration (environment, all optional):
+#   CLAUDE_COPILOT_DATA_DIR   The plugin's data folder (copilot-api state). The
+#                             plugin sets it; without it no copilot-api is used.
+#   ANTHROPIC_MODEL, ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL,
+#   ANTHROPIC_DEFAULT_HAIKU_MODEL
+#                             Copilot models for Default and Claude Code's aliases.
+#   CLAUDE_AGENT_ACP          Command of the ACP adapter (default: claude-agent-acp
+#                             on PATH, else npx -y @agentclientprotocol/claude-agent-acp).
+#   CLAUDE_CODE_EXECUTABLE    Claude Code binary the adapter runs (default: claude
+#                             on PATH, else the adapter's bundled one).
+#   CLAUDE_COPILOT_ALL_MODELS, CLAUDE_COPILOT_ACP_HIDE_OPTIONS,
+#   CLAUDE_COPILOT_ASK_PLAN_APPROVAL: see the proxy.
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# bb starts agents with a minimal PATH; add the usual install locations
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# Claude Code against copilot-api's Anthropic Messages API (as the Claude Code
+# (Copilot) provider configures it)
+export CLAUDE_CODE_USE_BEDROCK=0
+export CLAUDE_CODE_USE_VERTEX=0
+export CLAUDE_CODE_AUTO_MODE_SERVER=0          # copilot-api has no auto-mode endpoint
+export DISABLE_NON_ESSENTIAL_MODEL_CALLS=1     # save Copilot requests
+export DISABLE_TELEMETRY=1                     # no Anthropic telemetry for Copilot sessions
+export DISABLE_ERROR_REPORTING=1
+export DISABLE_FEEDBACK_COMMAND=1              # feedback goes to Anthropic
+export CLAUDE_CODE_ATTRIBUTION_HEADER=0        # stable system prompt for prompt caching
+export CLAUDE_COPILOT_SESSION=1                # lets a statusline detect Copilot mode
+
+if [[ -z "${CLAUDE_CODE_EXECUTABLE:-}" ]] && command -v claude >/dev/null; then
+    CLAUDE_CODE_EXECUTABLE="$(command -v claude)"
+    export CLAUDE_CODE_EXECUTABLE
+fi
+
+if [[ -n "${CLAUDE_AGENT_ACP:-}" ]]; then
+    read -r -a adapter <<<"$CLAUDE_AGENT_ACP"
+elif command -v claude-agent-acp >/dev/null; then
+    adapter=(claude-agent-acp)
+else
+    adapter=(npx -y @agentclientprotocol/claude-agent-acp)
+fi
+
+# one line per launch (no keys), for troubleshooting
+state="${XDG_STATE_HOME:-$HOME/.local/state}/claude-copilot-acp"
+mkdir -p "$state" 2>/dev/null &&
+    printf '%s data=%s model=%s adapter=%s\n' "$(date -u +%FT%TZ)" "${CLAUDE_COPILOT_DATA_DIR:-none}" "${ANTHROPIC_MODEL:-default}" "${adapter[0]}" >>"$state/launcher.log" 2>/dev/null || true
+
+if ! command -v node >/dev/null; then
+    echo "claude-copilot-acp: Node.js (node) was not found on PATH." >&2
+    exit 1
+fi
+exec node "$here/claude-copilot-acp-proxy.mjs" "${adapter[@]}" "$@"
