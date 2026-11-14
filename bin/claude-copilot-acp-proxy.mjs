@@ -2,6 +2,9 @@
 // ACP stdio proxy between bb and @agentclientprotocol/claude-agent-acp, used by
 // claude-copilot-acp. Before it starts the adapter, it makes sure this
 // plugin's copilot-api runs (bin/copilot-api.mjs) and points Claude Code at it.
+// Before each prompt it checks again and starts copilot-api if it stopped
+// (the plugin stops it when idle); when it can't, bb gets the prompt back as
+// an error that says why (not signed in, start failed and where the log is).
 // In agent -> bb messages it (bin/acp-rewrite.mjs, plan-approval.mjs):
 //
 // 1. Drops the session config options listed in CLAUDE_COPILOT_ACP_HIDE_OPTIONS
@@ -87,6 +90,19 @@ async function copilotEnvironment() {
 
 const { env: childEnv, labels: MODEL_LABELS } = await copilotEnvironment();
 
+const PLUGIN_DIR = join(import.meta.dirname, "..");
+const SETTINGS_HINT = "Settings → Plugins → Claude Copilot ACP provider";
+
+/** Why copilot-api can't serve a prompt, for bb to show in the thread. */
+const notRunningMessage = (status) =>
+  status.signedIn === false
+    ? `Not signed in to GitHub Copilot. Sign in under ${SETTINGS_HINT} (or run: bb acp-claude-copilot login), then send the message again.`
+    : `copilot-api is not running: ${status.error ?? "it did not start"}. Check ${SETTINGS_HINT}, then send the message again.`;
+
+/** Before a prompt: copilot-api runs (started again if it stopped), or the reason it doesn't. */
+const ensureForPrompt = () =>
+  ensure({ dataDir: DATA_DIR, pluginDir: PLUGIN_DIR }).catch((error) => ({ running: false, signedIn: null, error: String(error) }));
+
 const [cmd, ...args] = process.argv.slice(2);
 const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "inherit"], env: childEnv });
 
@@ -149,9 +165,11 @@ const planFileFor = async (msg) => {
   }
 };
 
-// bb -> agent: forwarded line by line, except bb's answers to plan approval questions
+// bb -> agent: forwarded line by line, in order, except bb's answers to plan
+// approval questions, and prompts while copilot-api can't be started
 const fromBb = createInterface({ input: process.stdin, crlfDelay: Infinity });
-fromBb.on("line", (line) => {
+
+const fromBbLine = async (line) => {
   if (pendingPlanApprovals.size > 0 && line.includes("bb-plan-approval-")) {
     try {
       const msg = JSON.parse(line);
@@ -166,9 +184,30 @@ fromBb.on("line", (line) => {
       // not ours: forward
     }
   }
+  if (DATA_DIR !== null && line.includes('"session/prompt"')) {
+    let msg = null;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      // not JSON: forward
+    }
+    if (msg?.method === "session/prompt" && msg.id !== undefined) {
+      const status = await ensureForPrompt();
+      if (!status.running) {
+        warn(notRunningMessage(status));
+        process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: notRunningMessage(status) } }) + "\n");
+        return;
+      }
+    }
+  }
   child.stdin.write(line + "\n");
+};
+
+let toAgent = Promise.resolve();
+fromBb.on("line", (line) => {
+  toAgent = toAgent.then(() => fromBbLine(line)).catch(() => child.stdin.write(line + "\n"));
 });
-fromBb.on("close", () => child.stdin.end());
+fromBb.on("close", () => toAgent.finally(() => child.stdin.end()));
 
 const rewrite = (msg) => rewriteMessage(msg, { hidden: HIDDEN_OPTIONS, labels: MODEL_LABELS });
 

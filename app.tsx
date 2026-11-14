@@ -348,7 +348,7 @@ function SettingsSection() {
               {signedIn && status.plan ? <span className="text-muted-foreground"> · {status.plan}</span> : null}
             </Row>
             <Row label="copilot-api">
-              {status.running ? `Running on 127.0.0.1:${status.port}` : "Stopped (starts with the next thread)"}
+              {status.running ? `Running on 127.0.0.1:${status.port}` : "Stopped (starts with the next message)"}
             </Row>
             {status.error && signedIn ? <Row label="Error">{status.error}</Row> : null}
             {status.home ? (
@@ -449,6 +449,14 @@ function SettingsSection() {
                 </span>
               </span>
             </label>
+            <Field label="Stop copilot-api when idle (minutes)" description="0 keeps it running. The next message starts it again.">
+              <CommitInput
+                type="number"
+                value={String(settings.idleStopMinutes)}
+                disabled={settingsDisabled}
+                onCommit={(v) => saveSettings({ idleStopMinutes: Math.max(0, Math.round(Number(v) || 0)) })}
+              />
+            </Field>
           </div>
         ) : settingsError ? null : (
           <p className="text-sm text-muted-foreground">Loading…</p>

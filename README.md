@@ -40,7 +40,8 @@ It has these parts:
   (not bb's declarative form) so it can be ordered and use live data: GitHub
   sign-in (device code), account and copilot-api state (start / stop /
   restart); model dropdowns from Copilot's model list (default model, Opus /
-  Sonnet / Haiku mapping, all Copilot models in the picker); the ACP adapter
+  Sonnet / Haiku mapping, all Copilot models in the picker) and idle-stop
+  minutes; the ACP adapter
   command; copilot-api's `config.json` (saving reloads it; the
   plugin-managed gateway keys are hidden and preserved). The settings are kept
   in the plugin's storage and written to the agent entry's `env`.
@@ -107,14 +108,17 @@ port and a generated gateway key. A machine-wide copilot-api, its
 `~/.local/share/copilot-api` and port 4141 are not used, and neither is the
 Claude Copilot provider plugin's copilot-api.
 
-When a thread starts, the proxy starts copilot-api if it isn't running. A lock
-file makes sure that threads starting at the same time start only one.
-copilot-api runs detached and serves all threads. It keeps running until
-`bb acp-claude-copilot stop`, the **Stop** button or a reboot; the next thread
-starts it again. There is no idle stop.
+When a thread starts, and again before each message, the proxy starts
+copilot-api if it isn't running. A lock file makes sure that threads starting
+at the same time start only one. copilot-api runs detached and serves all
+threads. The plugin stops it when no Claude Code (Copilot ACP) thread has been
+running for the configured minutes (**Stop copilot-api when idle**, default
+30; 0 keeps it running); the next message starts it again on the same port.
 
-The proxy only starts copilot-api after a GitHub sign-in. Without one, Claude
-Code can't reach a model, and the launcher's stderr says to sign in.
+The proxy only starts copilot-api after a GitHub sign-in. When copilot-api
+can't serve a message (not signed in, or it didn't start), bb gets the message
+back as an error that says why and where to look, and the adapter never sees
+it.
 
 ```
 bb acp-claude-copilot status   Show the plugin's copilot-api state
@@ -174,7 +178,8 @@ Launcher-only variables: `CLAUDE_CODE_EXECUTABLE` (default `claude` on PATH),
 `CLAUDE_COPILOT_ACP_HIDE_OPTIONS` (default `agent`, comma-separated ACP config
 options to hide) and `CLAUDE_COPILOT_ASK_PLAN_APPROVAL` (see below). The
 launcher also sets what the Claude Copilot provider plugin sets for Claude
-Code on Copilot: `CLAUDE_CODE_AUTO_MODE_SERVER=0`, the `DISABLE_*` flags,
+Code on Copilot: `CLAUDE_CODE_AUTO_MODE_SERVER=0`,
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, the `DISABLE_*` flags,
 `CLAUDE_CODE_ATTRIBUTION_HEADER=0` and `CLAUDE_COPILOT_SESSION=1`. Each launch
 appends one line (time, data folder, model, adapter; no keys) to
 `~/.local/state/claude-copilot-acp/launcher.log`.

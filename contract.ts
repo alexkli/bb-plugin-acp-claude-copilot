@@ -31,6 +31,8 @@ export const acpSettingsSchema = z.object({
   haikuModel: z.string(),
   allModels: z.boolean(),
   adapterCommand: z.string(),
+  /** Stop copilot-api after this many minutes without a running thread; 0 keeps it running. */
+  idleStopMinutes: z.number().int().nonnegative(),
 });
 export type AcpSettings = z.infer<typeof acpSettingsSchema>;
 

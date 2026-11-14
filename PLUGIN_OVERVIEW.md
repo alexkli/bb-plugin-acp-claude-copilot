@@ -11,7 +11,7 @@
 
 ## How it works
 
-The plugin ships a launcher script that runs Claude Code over ACP with the claude-agent-acp adapter, and a small proxy in front of it. The proxy starts the plugin's own copilot-api (https://github.com/caozhiyuan/copilot-api) on a random local port with a generated key when a thread needs it, and points Claude Code at it. The plugin registers the launcher as a custom agent in bb's ACP agents plugin and keeps that entry current across updates. It uses only the public plugin SDK.
+The plugin ships a launcher script that runs Claude Code over ACP with the claude-agent-acp adapter, and a small proxy in front of it. The proxy starts the plugin's own copilot-api (https://github.com/caozhiyuan/copilot-api) on a random local port with a generated key when a thread needs it, and points Claude Code at it. copilot-api stops after 30 idle minutes by default and starts again with the next message. The plugin registers the launcher as a custom agent in bb's ACP agents plugin and keeps that entry current across updates. It uses only the public plugin SDK.
 
 It is independent of the Claude Copilot provider plugin, with its own sign-in and copilot-api; the two can be installed side by side.
 

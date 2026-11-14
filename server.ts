@@ -57,6 +57,7 @@ const DEFAULT_SETTINGS: AcpSettings = {
   haikuModel: "claude-haiku-5-5",
   allModels: true,
   adapterCommand: "",
+  idleStopMinutes: 30,
 };
 
 // -- Provider usage contract (bb's provider-usage plugin discovers it) -------------
@@ -440,6 +441,43 @@ export default function plugin(bb: BbPluginApi) {
         ? await instanceUsage({ dataDir: dir, pluginDir, node, instanceId: instance, path: full })
         : await apiRequest(dir, full);
     return new Response(res.body, { status: res.status, headers: { "content-type": res.contentType } });
+  });
+
+  // -- Idle stop ------------------------------------------------------------------
+  // copilot-api stops when no Claude Code (Copilot ACP) thread has been running
+  // for the configured minutes; the proxy starts it again with the next prompt.
+
+  bb.background.service("idle-stop", {
+    async start(signal) {
+      let lastActive = Date.now();
+      while (!signal.aborted) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 60_000);
+          signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+        });
+        if (signal.aborted) break;
+        try {
+          const { idleStopMinutes } = await getSettings();
+          const running = await bb.sdk.threads.listRunning();
+          let active = false;
+          if (running.length > 0) {
+            const list = (await bb.sdk.threads.list({ threadIds: running.map((t) => t.id).slice(0, 200) })) as unknown;
+            const threads = (Array.isArray(list) ? list : ((list as { threads?: unknown[] }).threads ?? [])) as {
+              providerId?: string;
+            }[];
+            active = threads.some((t) => t.providerId === PROVIDER_ID);
+          }
+          if (active) lastActive = Date.now();
+          if (idleStopMinutes <= 0 || Date.now() - lastActive < idleStopMinutes * 60_000) continue;
+          const dir = await dataDir();
+          if ((await proxyStatus(dir)).running && (await stop(dir))) {
+            bb.log.info(`stopped copilot-api after ${idleStopMinutes} idle minutes`);
+          }
+        } catch (error) {
+          bb.log.warn(`idle check failed: ${String(error)}`);
+        }
+      }
+    },
   });
 
   // -- Provider usage entry ----------------------------------------------------------
