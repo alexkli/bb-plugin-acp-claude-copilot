@@ -2,8 +2,9 @@
 
 - **Claude Code (Copilot ACP)** as an agent in the model picker. Threads run Claude Code through the ACP adapter on your GitHub Copilot subscription instead of an Anthropic login.
 - Every Copilot chat model in the model picker: Claude, plus GPT, Gemini, Grok and others through copilot-api's Messages translation.
-- GitHub sign-in with a device code in the plugin settings, plus copilot-api status, start and stop.
-- Settings for the default model and the Copilot models behind Claude Code's opus, sonnet and haiku aliases.
+- A settings page for GitHub sign-in with a device code, copilot-api start and stop, the default model, and the Copilot models behind Claude Code's opus, sonnet and haiku aliases.
+- A **Copilot usage** page with copilot-api's token and cost dashboard. It also works from bb on a phone.
+- The Copilot credits each thread has used, under the prompt.
 - Your Copilot premium-request quota in the Provider usage panel.
 - Plan mode that waits for you: when Claude finishes a plan, it opens in the side panel of the thread you're looking at, and you get Claude's "Ready to code?" question, even in Full Access, where bb would otherwise approve it on its own.
 - `bb acp-claude-copilot` commands: status, login, logout, start and stop.

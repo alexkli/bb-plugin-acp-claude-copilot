@@ -20,7 +20,18 @@ import {
   stop,
   type ProxyStatus,
 } from "./bin/copilot-api.mjs";
-import { appContract, type AppStatus, type LoginStatus } from "./contract";
+import {
+  acpSettingsSchema,
+  appContract,
+  claudeSessionIdSchema,
+  type AcpSettings,
+  type AppStatus,
+  type LoginStatus,
+  type SessionCredits,
+  type SettingsView,
+} from "./contract";
+import { DASHBOARD_PATHS, SHIM, VIEWER_CSP } from "./dashboard";
+import { apiRequest, getConfig, instanceUsage, listInstances, OWN_INSTANCE_ID, sessionUsage, setConfig } from "./usage";
 
 // Claude Code on GitHub Copilot as a bb ACP agent:
 // - registers the agent (id "claude-copilot", provider "acp-claude-copilot") in
@@ -37,6 +48,16 @@ const PACKAGE_NAME = "bb-plugin-acp-claude-copilot";
 const LIST_RESOURCES = "provider-usage.v1.listResources";
 const GET_RESOURCE = "provider-usage.v1.getResource";
 const USAGE_CACHE_KEY = "lastUsage";
+const SETTINGS_KEY = "settings";
+
+const DEFAULT_SETTINGS: AcpSettings = {
+  defaultModel: "claude-opus-5-5",
+  opusModel: "claude-opus-5-5",
+  sonnetModel: "claude-sonnet-5-5",
+  haikuModel: "claude-haiku-5-5",
+  allModels: true,
+  adapterCommand: "",
+};
 
 // -- Provider usage contract (bb's provider-usage plugin discovers it) -------------
 
@@ -174,46 +195,19 @@ function findNode(): string {
 }
 
 export default function plugin(bb: BbPluginApi) {
-  const settings = bb.settings.define({
-    defaultModel: {
-      type: "string",
-      label: "Default model",
-      description:
-        "Copilot model for new threads (ANTHROPIC_MODEL), e.g. claude-opus-5-5 or my-claude-gpt-5 for a non-Claude model. Empty: Claude Code's default.",
-      default: "claude-opus-5-5",
-    },
-    opusModel: {
-      type: "string",
-      label: "Opus model",
-      description: "Copilot model behind Claude Code's opus alias (ANTHROPIC_DEFAULT_OPUS_MODEL).",
-      default: "claude-opus-5-5",
-    },
-    sonnetModel: {
-      type: "string",
-      label: "Sonnet model",
-      description: "Copilot model behind Claude Code's sonnet alias (ANTHROPIC_DEFAULT_SONNET_MODEL).",
-      default: "claude-sonnet-5-5",
-    },
-    haikuModel: {
-      type: "string",
-      label: "Haiku model",
-      description: "Copilot model behind Claude Code's haiku alias and background tasks (ANTHROPIC_DEFAULT_HAIKU_MODEL).",
-      default: "claude-haiku-5-5",
-    },
-    allModels: {
-      type: "boolean",
-      label: "All Copilot models in the picker",
-      description:
-        "List every Copilot chat model (GPT, Gemini, Grok, ...) in the model picker, not only Claude Code's own. Applies to new threads.",
-      default: true,
-    },
-    adapterCommand: {
-      type: "string",
-      label: "ACP adapter command",
-      description:
-        "Optional command that runs @agentclientprotocol/claude-agent-acp, e.g. a pinned install. Default: claude-agent-acp on PATH, else npx.",
-    },
-  });
+  // Settings live in the plugin's own storage and are edited in its settings
+  // section (app.tsx), not bb's declarative form, so the page can show the
+  // GitHub sign-in first and model dropdowns from Copilot's live model list.
+  async function getSettings(): Promise<AcpSettings> {
+    const stored = acpSettingsSchema.partial().safeParse((await bb.storage.kv.get(SETTINGS_KEY)) ?? {});
+    return { ...DEFAULT_SETTINGS, ...(stored.success ? stored.data : {}) };
+  }
+  async function setSettings(patch: Partial<AcpSettings>): Promise<AcpSettings> {
+    const next = acpSettingsSchema.parse({ ...(await getSettings()), ...patch });
+    await bb.storage.kv.set(SETTINGS_KEY, next);
+    sync();
+    return next;
+  }
 
   const pluginDir = findPluginDir();
   const launcher = join(pluginDir, "bin", "claude-copilot-acp");
@@ -236,7 +230,7 @@ export default function plugin(bb: BbPluginApi) {
   const sync = () => {
     syncing = syncing
       .then(async () => {
-        const s = await settings.get();
+        const s = await getSettings();
         await provisionAgent(bb, launcher, {
           CLAUDE_COPILOT_DATA_DIR: await dataDir(),
           ANTHROPIC_MODEL: s.defaultModel?.trim(),
@@ -252,7 +246,6 @@ export default function plugin(bb: BbPluginApi) {
       });
   };
   sync();
-  settings.onChange(() => sync());
 
   // -- copilot-api --------------------------------------------------------------
 
@@ -373,6 +366,80 @@ export default function plugin(bb: BbPluginApi) {
       await new Promise((r) => setTimeout(r, 300));
       return appStatus();
     },
+    restart: async () => {
+      await stop(await dataDir());
+      await new Promise((r) => setTimeout(r, 500));
+      const status = await start();
+      const result = await appStatus();
+      return status.error && !status.running ? { ...result, error: status.error } : result;
+    },
+    getSettings: () => settingsView(),
+    setSettings: async (patch) => {
+      await setSettings(patch);
+      return settingsView();
+    },
+    getConfig: async () => ({ json: await getConfig(await dataDir()) }),
+    setConfig: async ({ json }) => setConfig(await dataDir(), json),
+    listInstances: async () => ({ instances: await listInstances(await dataDir()) }),
+    sessionCredits: ({ threadId }) => sessionCredits(threadId),
+  });
+
+  /** Credits a thread's Claude Code session used, from copilot-api's usage log. */
+  async function sessionCredits(threadId: string): Promise<SessionCredits> {
+    try {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (thread.providerId !== PROVIDER_ID) return { status: "unsupported" };
+      // Identity events only: no prompts, messages or tool output.
+      const events = await bb.sdk.threads.events.list({ threadId, types: ["thread/identity"], order: "desc", limit: "1" });
+      const identity = events.find((e) => e.type === "thread/identity");
+      const parsed = claudeSessionIdSchema.safeParse(identity?.data.providerThreadId);
+      if (!parsed.success) return { status: "pending" };
+      return { status: "ok", sessionId: parsed.data, usage: await sessionUsage(await dataDir(), parsed.data) };
+    } catch (cause) {
+      return { status: "error", message: cause instanceof Error ? cause.message : String(cause) };
+    }
+  }
+
+  async function settingsView(): Promise<SettingsView> {
+    const dir = await dataDir();
+    // a stopped copilot-api answers nothing; listModels then returns the cached list
+    const status = await proxyStatus(dir).catch(() => null);
+    const models = status ? await listModels(dir, status).catch(() => []) : [];
+    return { settings: await getSettings(), models };
+  }
+
+  // -- Usage dashboard -------------------------------------------------------------
+
+  bb.http.route("GET", "/viewer", async (c) => {
+    const status = await start();
+    if (!status.running) {
+      return c.text(
+        status.signedIn
+          ? "copilot-api did not start; see the Claude Copilot ACP plugin settings."
+          : "Sign in to GitHub Copilot in the Claude Copilot ACP plugin settings first.",
+        503,
+      );
+    }
+    const res = await apiRequest(await dataDir(), "/usage-viewer");
+    const html = res.body.replace(/<head(\s[^>]*)?>/i, (m) => `${m}${SHIM}`);
+    c.header("content-security-policy", VIEWER_CSP);
+    return c.html(html, res.status === 200 ? 200 : 502);
+  });
+
+  bb.http.route("GET", "/proxy", async (c) => {
+    const target = c.req.query("path") ?? "";
+    const instance = c.req.query("instance") ?? OWN_INSTANCE_ID;
+    const [path = "", query = ""] = target.split("?", 2);
+    if (!DASHBOARD_PATHS.test(path)) return c.text("Path not allowed", 400);
+    const full = query ? `${path}?${query}` : path;
+    const dir = await dataDir();
+    // Token usage is per copilot-api home; account-level data (quota, models)
+    // always comes from this plugin's own copilot-api.
+    const res =
+      instance !== OWN_INSTANCE_ID && path.startsWith("/token-usage")
+        ? await instanceUsage({ dataDir: dir, pluginDir, node, instanceId: instance, path: full })
+        : await apiRequest(dir, full);
+    return new Response(res.body, { status: res.status, headers: { "content-type": res.contentType } });
   });
 
   // -- Provider usage entry ----------------------------------------------------------

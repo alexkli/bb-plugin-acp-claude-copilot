@@ -26,12 +26,38 @@ It has these parts:
   and the plugin.
 - The bb plugin. It registers the launcher as the custom agent `claude-copilot`
   (provider `acp-claude-copilot`) in bb's ACP agents plugin and keeps that
-  entry up to date. It passes the plugin settings to the agent, and adds a
-  GitHub sign-in section to its settings. It gives the provider the Claude mark
-  and the Copilot glyph as its icon, monochrome to tell it apart from the
-  colored icon of the Claude Copilot provider plugin. It adds the Copilot
-  premium-request quota to bb's Provider usage panel. It uses only the public
-  plugin SDK.
+  entry up to date. It passes the plugin settings to the agent. It gives the
+  provider the Claude mark and the Copilot glyph as its icon, monochrome to
+  tell it apart from the colored icon of the Claude Copilot provider plugin.
+  It has the same settings page, **Copilot usage** page and credits indicator
+  under the prompt as the Claude Copilot provider plugin (see [In bb](#in-bb)),
+  and adds the Copilot premium-request quota to bb's Provider usage panel. It
+  uses only the public plugin SDK.
+
+## In bb
+
+- **Settings → Claude Copilot ACP provider**: one section, owned by the plugin
+  (not bb's declarative form) so it can be ordered and use live data: GitHub
+  sign-in (device code), account and copilot-api state (start / stop /
+  restart); model dropdowns from Copilot's model list (default model, Opus /
+  Sonnet / Haiku mapping, all Copilot models in the picker); the ACP adapter
+  command; copilot-api's `config.json` (saving reloads it; the
+  plugin-managed gateway keys are hidden and preserved). The settings are kept
+  in the plugin's storage and written to the agent entry's `env`.
+- **Copilot usage** page and sidebar-footer button: copilot-api's usage
+  dashboard in a sandboxed iframe whose data requests go through the plugin
+  (`/viewer`, `/proxy` routes), so it works from bb on a phone too. Tabs at
+  the top switch between local copilot-api instances: this plugin's (default)
+  and any other copilot-api home with a usage database, except other bb
+  plugins' own (found from running copilot-api processes and the default
+  `~/.local/share/copilot-api`). Other
+  instances are read from a read-only snapshot (`VACUUM INTO`) with
+  copilot-api's own query code (`usage-reader.mjs`).
+- **Credits under the prompt**: the Copilot AI credits the thread's Claude
+  Code session has used so far, as copilot-api recorded them (keyed by the
+  session id, which the ACP adapter uses as Claude Code's session id). Shown
+  next to bb's context-window control; only on Claude Code (Copilot ACP)
+  threads.
 
 ## Requirements
 
@@ -58,7 +84,7 @@ It has these parts:
    launcher needs no action. Other custom agents are left alone.
 
 2. Sign in to GitHub: Settings → Plugins → **Claude Copilot ACP provider** →
-   **Sign in with GitHub**, then enter the code on github.com. Or run
+   **Sign in with GitHub** (at the top), then enter the code on github.com. Or run
    `bb acp-claude-copilot login`.
 
 3. Optional: install the ACP adapter once. Without it, the launcher runs it
@@ -130,8 +156,8 @@ subagents and background tasks.
 
 ### Settings and launcher variables
 
-The plugin passes its settings to the agent as environment variables in the
-agent entry. You can add more variables to the entry's `env` in the ACP agents
+The plugin passes its settings (from its settings page) to the agent as
+environment variables in the agent entry. You can add more variables to the entry's `env` in the ACP agents
 settings; the plugin keeps them.
 
 | Setting | Variable | Default |
@@ -184,9 +210,10 @@ used and entitled amount in dollars (an AI credit is $0.01, a premium request
 $0.04). Background polls never start copilot-api and show the last value; a
 refresh starts it.
 
-Threads show no cost: Claude Code estimates cost at Anthropic list prices,
-which says nothing about Copilot billing, so the proxy removes it. Token
-counts and the context meter stay.
+Threads show no cost from Claude Code: it estimates cost at Anthropic list
+prices, which says nothing about Copilot billing, so the proxy removes it.
+Token counts and the context meter stay, and the credits indicator under the
+prompt shows what the session used in Copilot AI credits.
 
 bb lists the entry under the raw provider id, because ACP custom agents don't
 have the usage capability.

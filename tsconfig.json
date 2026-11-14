@@ -5,10 +5,32 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
-    "lib": ["ES2022", "DOM"],
-    "types": ["node"],
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "types": [
+      "node"
+    ],
     "noEmit": true,
-    "skipLibCheck": false
+    "skipLibCheck": false,
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
   },
-  "include": ["server.ts", "app.tsx", "agent-entry.ts", "contract.ts", "icon-paths.ts", "bin/copilot-api.d.mts"]
+  "include": [
+    "server.ts",
+    "app.tsx",
+    "agent-entry.ts",
+    "contract.ts",
+    "dashboard.ts",
+    "usage.ts",
+    "session-credits.tsx",
+    "icon-paths.ts",
+    "components",
+    "lib",
+    "bin/copilot-api.d.mts"
+  ]
 }
