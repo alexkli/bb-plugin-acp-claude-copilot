@@ -34,6 +34,21 @@ It has these parts:
   and adds the Copilot premium-request quota to bb's Provider usage panel. It
   uses only the public plugin SDK.
 
+## Screenshots
+
+**Claude Code (Copilot ACP)** in the model picker, with Copilot's GPT and
+Gemini models next to the Claude models:
+
+![New thread with the Claude Code (Copilot ACP) provider selected and its model list open, showing Claude, Gemini and GPT models](docs/overview.png)
+
+Settings: GitHub sign-in and copilot-api state first, then the model mapping.
+
+![Claude Copilot ACP provider settings with GitHub account, copilot-api status and model dropdowns](docs/settings.png)
+
+The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
+
+![Copilot usage page with token totals and a tab for another local copilot-api instance](docs/usage.png)
+
 ## In bb
 
 - **Settings → Claude Copilot ACP provider**: one section, owned by the plugin

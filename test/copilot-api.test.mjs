@@ -146,5 +146,6 @@ test("modelConfig is an availableModels allowlist for claude-agent-acp", () => {
   assert.equal(modelConfig([]), null, "no list: leave the adapter's own picker");
   assert.equal(modelLabel(models[1]), "GPT-5 (OpenAI, 400K)");
   assert.equal(modelLabel({ ...models[1], contextWindow: 1000000 }), "GPT-5 (OpenAI, 1M)");
+  assert.equal(modelLabel({ ...models[1], contextWindow: 1048576 }), "GPT-5 (OpenAI, 1M)", "a binary 1M is 1M too");
   assert.equal(modelLabel({ ...models[0], vendor: null }), "Claude Opus 5.5");
 });

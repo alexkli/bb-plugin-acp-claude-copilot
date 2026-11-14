@@ -312,7 +312,8 @@ export function modelConfig(models) {
 
 /** The picker label of a Copilot model: its name, plus vendor and context window. */
 export function modelLabel(model) {
-  const window = model.contextWindow ? `${model.contextWindow >= 1_000_000 ? `${model.contextWindow / 1_000_000}M` : `${Math.round(model.contextWindow / 1000)}K`}` : null;
+  const tokens = model.contextWindow;
+  const window = tokens ? (tokens >= 1_000_000 ? `${Math.round(tokens / 100_000) / 10}M` : `${Math.round(tokens / 1000)}K`) : null;
   const extras = [model.vendor, window].filter(Boolean);
   return extras.length > 0 ? `${model.displayName} (${extras.join(", ")})` : model.displayName;
 }
