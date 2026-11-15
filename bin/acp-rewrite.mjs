@@ -8,13 +8,14 @@ const MODEL_OPTION = "model";
  * Rewrites one agent -> bb message in place and returns it:
  * - drops the session config options in `hidden` (e.g. the subagent picker);
  * - gives Copilot models in the model option their Copilot names
- *   (`labels`: model id -> label); the values the adapter takes stay as they are;
+ *   (`labels`: model id -> { name, description? }; a description replaces the
+ *   adapter's); the values the adapter takes stay as they are;
  * - removes the cost from usage_update: Claude Code estimates it at Anthropic
  *   list prices, which says nothing about Copilot (premium requests / AI
  *   credits). Token counts and the context window stay.
  *
  * @param {any} msg
- * @param {{ hidden: Set<string>, labels: Map<string, string> }} options
+ * @param {{ hidden: Set<string>, labels: Map<string, { name: string, description?: string }> }} options
  */
 export function rewriteMessage(msg, { hidden, labels }) {
   rewriteOptions(msg?.result, hidden, labels);
@@ -50,7 +51,11 @@ function relabel(entry, key, labels) {
   if (!entry || typeof entry[key] !== "string") return;
   const label = labels.get(entry[key]);
   if (label === undefined) return;
-  entry.name = label;
+  entry.name = label.name;
+  if (label.description !== undefined) {
+    entry.description = label.description;
+    return;
+  }
   // the adapter describes an allowlisted model it doesn't know with nothing useful
   if (typeof entry.description !== "string" || entry.description === "" || entry.description === entry[key]) {
     entry.description = `GitHub Copilot model ${entry[key]}`;

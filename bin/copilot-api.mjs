@@ -310,10 +310,54 @@ export function modelConfig(models) {
   return ids.length === 0 ? null : JSON.stringify({ availableModels: ids });
 }
 
-/** The picker label of a Copilot model: its name, plus vendor and context window. */
+function formatTokens(tokens) {
+  return tokens >= 1_000_000 ? `${Math.round(tokens / 100_000) / 10}M` : `${Math.round(tokens / 1000)}K`;
+}
+
+/** The picker label of a non-Claude Copilot model: its name, plus vendor and context window. */
 export function modelLabel(model) {
-  const tokens = model.contextWindow;
-  const window = tokens ? (tokens >= 1_000_000 ? `${Math.round(tokens / 100_000) / 10}M` : `${Math.round(tokens / 1000)}K`) : null;
+  const window = model.contextWindow ? formatTokens(model.contextWindow) : null;
   const extras = [model.vendor, window].filter(Boolean);
   return extras.length > 0 ? `${model.displayName} (${extras.join(", ")})` : model.displayName;
+}
+
+const isAnthropic = (model) => model.vendor === "Anthropic" || String(model.upstreamId ?? model.id).startsWith("claude-");
+const isOneM = (model) => model.contextWindow !== null && model.contextWindow >= 1_000_000;
+/** A Claude model's name without a 1M marker Copilot may add ("(1M context)", "1M"). */
+const baseName = (name) => name.replace(/\s*(\(1M(\s+context)?\)|-?\b1M(\s+context)?)$/i, "").trim() || name;
+
+/**
+ * Picker rows for the Copilot models, by model id: { name, description? }.
+ * Claude models read as in the Claude Code (Copilot) provider: the plain name
+ * ("Claude Opus 5.5"), with vendor and context window in the description.
+ * When Copilot lists a Claude model in a 1M and a shorter version, both stay
+ * and the 1M one gets a "1M" suffix. Other models keep modelLabel.
+ */
+export function modelLabels(models) {
+  const labels = new Map();
+  const claude = models.filter(isAnthropic);
+  const versionsByName = new Map();
+  for (const model of claude) {
+    const name = baseName(model.displayName);
+    versionsByName.set(name, [...(versionsByName.get(name) ?? []), model]);
+  }
+  for (const model of models) {
+    if (!isAnthropic(model)) {
+      labels.set(model.id, { name: modelLabel(model) });
+      continue;
+    }
+    const name = baseName(model.displayName);
+    const versions = versionsByName.get(name);
+    const both = versions.some(isOneM) && versions.some((m) => !isOneM(m));
+    const description = [
+      name,
+      model.vendor,
+      model.contextWindow ? `${formatTokens(model.contextWindow)} context` : null,
+      "via GitHub Copilot",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    labels.set(model.id, { name: both && isOneM(model) ? `${name} 1M` : name, description });
+  }
+  return labels;
 }

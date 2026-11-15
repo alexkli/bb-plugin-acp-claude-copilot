@@ -10,8 +10,8 @@ import { healthy, prepareHome, stop } from "../bin/copilot-api.mjs";
 import { fakePluginDir } from "./fixtures/plugin-dir.mjs";
 
 const labels = new Map([
-  ["my-claude-gpt-5", "GPT-5 (OpenAI, 400K)"],
-  ["claude-sonnet-5-5", "Claude Sonnet 5.5 (Anthropic, 200K)"],
+  ["my-claude-gpt-5", { name: "GPT-5 (OpenAI, 400K)" }],
+  ["claude-sonnet-5-5", { name: "Claude Sonnet 5.5", description: "Claude Sonnet 5.5 · Anthropic · 200K context · via GitHub Copilot" }],
 ]);
 const hidden = new Set(["agent"]);
 
@@ -43,7 +43,7 @@ test("hides the listed options and names Copilot models in a session/new result"
   assert.deepEqual(msg.result.configOptions[1].options, [
     { value: "default", name: "Default", description: "Recommended" },
     { value: "my-claude-gpt-5", name: "GPT-5 (OpenAI, 400K)", description: "GitHub Copilot model my-claude-gpt-5" },
-    { value: "claude-sonnet-5-5", name: "Claude Sonnet 5.5 (Anthropic, 200K)", description: "Sonnet 5.5 for everyday tasks" },
+    { value: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", description: "Claude Sonnet 5.5 · Anthropic · 200K context · via GitHub Copilot" },
   ]);
   assert.equal(msg.result.models.availableModels[1].name, "GPT-5 (OpenAI, 400K)");
 });
@@ -112,7 +112,8 @@ send({ jsonrpc: "2.0", method: "test/env", params: {
 send({ jsonrpc: "2.0", id: 1, result: { sessionId: "s1", configOptions: [
   { id: "agent", name: "Agent", type: "select", options: [] },
   { id: "model", name: "Model", type: "select", currentValue: "default", options: [
-    { value: "default", name: "Default" }, { value: "my-claude-gpt-5", name: "my-claude-gpt-5" }] }] } });
+    { value: "default", name: "Default" }, { value: "my-claude-gpt-5", name: "my-claude-gpt-5" },
+    { value: "claude-sonnet-5-5", name: "Sonnet", description: "Sonnet 5.5 for everyday tasks" }] }] } });
 send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used: 1, size: 2, cost: { amount: 1, currency: "USD" } } } });
 `,
   );
@@ -135,6 +136,8 @@ send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", upda
   const result = received.find((m) => m.id === 1).result;
   assert.deepEqual(result.configOptions.map((o) => o.id), ["model"], "subagent option hidden");
   assert.equal(result.configOptions[0].options[1].name, "GPT-5 (OpenAI, 400K)");
+  assert.equal(result.configOptions[0].options[2].name, "Claude Sonnet 5.5");
+  assert.match(result.configOptions[0].options[2].description, /^Claude Sonnet 5\.5 · Anthropic · .* · via GitHub Copilot$/);
   const usage = received.find((m) => m.params?.update?.sessionUpdate === "usage_update").params.update;
   assert.equal("cost" in usage, false);
 });
