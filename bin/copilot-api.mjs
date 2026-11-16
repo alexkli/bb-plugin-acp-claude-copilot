@@ -328,8 +328,9 @@ const baseName = (name) => name.replace(/\s*(\(1M(\s+context)?\)|-?\b1M(\s+conte
 
 /**
  * Picker rows for the Copilot models, by model id: { name, description? }.
- * Claude models read as in the Claude Code (Copilot) provider: the plain name
- * ("Claude Opus 5.5"), with vendor and context window in the description.
+ * Claude models by their plain name without "Claude" ("Opus 5.5"), with the
+ * full name, vendor and context window in the description, in the Claude Code
+ * (Copilot) provider's format.
  * When Copilot lists a Claude model in a 1M and a shorter version, both stay
  * and the 1M one gets a "1M" suffix. Other models keep modelLabel.
  */
@@ -357,7 +358,8 @@ export function modelLabels(models) {
     ]
       .filter(Boolean)
       .join(" · ");
-    labels.set(model.id, { name: both && isOneM(model) ? `${name} 1M` : name, description });
+    const short = name.replace(/^Claude\s+/i, "") || name;
+    labels.set(model.id, { name: both && isOneM(model) ? `${short} 1M` : short, description });
   }
   return labels;
 }

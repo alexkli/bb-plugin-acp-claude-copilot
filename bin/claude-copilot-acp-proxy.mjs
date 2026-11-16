@@ -10,9 +10,9 @@
 // 1. Drops the session config options listed in CLAUDE_COPILOT_ACP_HIDE_OPTIONS
 //    (comma-separated ids, default "agent"): with many subagents, the subagent
 //    option squeezes bb's model picker list on narrow screens.
-// 2. Names the Copilot models in the model picker as Copilot does: Claude
-//    models by their plain name (as the Claude Code (Copilot) provider), a
-//    1M version next to a shorter one with a "1M" suffix; GPT, Gemini, ...
+// 2. Names the Copilot models in the model picker: Claude models by their
+//    plain name without "Claude" ("Opus 5.5"), a 1M version next to a
+//    shorter one with a "1M" suffix; GPT, Gemini, ...
 //    with vendor and context window. They are there because the adapter gets every Copilot model as its
 //    availableModels allowlist (CLAUDE_MODEL_CONFIG), unless
 //    CLAUDE_COPILOT_ALL_MODELS=0.

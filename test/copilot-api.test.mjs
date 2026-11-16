@@ -151,7 +151,7 @@ test("modelConfig is an availableModels allowlist for claude-agent-acp", () => {
   assert.equal(modelLabel({ ...models[0], vendor: null }), "Claude Opus 5.5");
 });
 
-test("modelLabels names Claude models plainly and marks a 1M version next to a shorter one", () => {
+test("modelLabels names Claude models without the Claude prefix and marks a 1M version next to a shorter one", () => {
   const claude = (id, displayName, contextWindow) => ({ id, upstreamId: id, displayName, vendor: "Anthropic", contextWindow });
   const labels = modelLabels([
     claude("claude-opus-5-5", "Claude Opus 5.5", 1000000),
@@ -162,13 +162,13 @@ test("modelLabels names Claude models plainly and marks a 1M version next to a s
     { id: "my-claude-gpt-5[1m]", upstreamId: "gpt-5", displayName: "GPT-5", vendor: "OpenAI", contextWindow: 1000000 },
   ]);
   assert.deepEqual(labels.get("claude-opus-5-5"), {
-    name: "Claude Opus 5.5",
+    name: "Opus 5.5",
     description: "Claude Opus 5.5 · Anthropic · 1M context · via GitHub Copilot",
   });
-  assert.equal(labels.get("claude-sonnet-5").name, "Claude Sonnet 5");
+  assert.equal(labels.get("claude-sonnet-5").name, "Sonnet 5");
   assert.equal(labels.get("claude-sonnet-5").description, "Claude Sonnet 5 · Anthropic · 200K context · via GitHub Copilot");
-  assert.equal(labels.get("claude-sonnet-5-1m").name, "Claude Sonnet 5 1M");
-  assert.equal(labels.get("claude-haiku-5").name, "Claude Haiku 5");
-  assert.equal(labels.get("claude-haiku-5-1m").name, "Claude Haiku 5 1M");
+  assert.equal(labels.get("claude-sonnet-5-1m").name, "Sonnet 5 1M");
+  assert.equal(labels.get("claude-haiku-5").name, "Haiku 5");
+  assert.equal(labels.get("claude-haiku-5-1m").name, "Haiku 5 1M");
   assert.deepEqual(labels.get("my-claude-gpt-5[1m]"), { name: "GPT-5 (OpenAI, 1M)" });
 });
