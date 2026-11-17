@@ -46,9 +46,9 @@ Gemini models next to the Claude models:
 ![New thread with the Claude Code (Copilot ACP) provider selected and its model list open, showing Claude, Gemini and GPT models](docs/overview.png)
 
 Settings: GitHub sign-in and copilot-api state first, then the model mapping,
-then the agent's Bash sandbox and adapter.
+then the agent's Bash sandbox, adapter and extra environment variables.
 
-![Claude Copilot ACP provider settings with GitHub account, copilot-api status, model dropdowns, idle stop, Bash sandbox in Accept Edits and ACP adapter command](docs/settings.png)
+![Claude Copilot ACP provider settings with GitHub account, copilot-api status, model dropdowns, idle stop, Bash sandbox in Accept Edits, ACP adapter command and extra environment variables](docs/settings.png)
 
 The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
 
