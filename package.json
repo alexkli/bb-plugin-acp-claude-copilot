@@ -29,10 +29,12 @@
       "icon": "./assets/logo.svg"
     },
     "server": "./server.ts",
-    "app": "./app.tsx"
+    "app": "./app.tsx",
+    "host": "./host.ts"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.107.3",
+    "@get-bb/plugin-sdk": "0.6.132",
     "@jeffreycao/copilot-api": "2.9.3",
     "@radix-ui/react-slot": "^1.5.0",
     "class-variance-authority": "^0.7.1",
@@ -41,7 +43,6 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.6.132",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",

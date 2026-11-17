@@ -35,6 +35,8 @@ export const acpSettingsSchema = z.object({
   idleStopMinutes: z.number().int().nonnegative(),
   /** Run Bash in Claude Code's OS sandbox when a thread uses Accept Edits. */
   sandbox: z.boolean(),
+  /** NAME=value pairs, separated by spaces, for the agent; the settings above win. */
+  extraEnv: z.string(),
 });
 export type AcpSettings = z.infer<typeof acpSettingsSchema>;
 

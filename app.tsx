@@ -494,6 +494,18 @@ function SettingsSection() {
               onCommit={(v) => saveSettings({ adapterCommand: v.trim() })}
             />
           </Field>
+          <Field
+            label="Extra environment variables"
+            description="Optional NAME=value pairs, separated by spaces, for the agent, e.g. CLAUDE_COPILOT_ASK_PLAN_APPROVAL=0. The settings above win over these. A change applies when a thread's agent next starts."
+          >
+            <CommitInput
+              type="text"
+              value={settings.extraEnv}
+              disabled={settingsDisabled}
+              onCommit={(v) => saveSettings({ extraEnv: v.trim() })}
+            />
+          </Field>
+          {settingsError ? <p className="text-sm text-destructive">{settingsError}</p> : null}
         </Section>
       ) : null}
 

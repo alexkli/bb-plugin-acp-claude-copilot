@@ -3,33 +3,41 @@
 # @agentclientprotocol/claude-agent-acp, behind claude-copilot-acp-proxy.mjs
 # (next to this script). The proxy makes sure the plugin's own copilot-api
 # runs and points Claude Code at it (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN).
-# The bb plugin registers this script in bb's provider-acp customAgents (id
-# "claude-copilot", provider acp-claude-copilot) and passes its settings as the
-# variables below.
+# The bb plugin registers the provider acp-claude-copilot, which bb runs through
+# the SDK's ACP bridge with this script as the command, and writes its settings
+# as the variables below to an env file (CLAUDE_COPILOT_ENV_FILE) this script
+# reads first.
 #
 # stdout is the ACP channel: never print anything to it.
 #
 # Configuration (environment, all optional):
+#   CLAUDE_COPILOT_ENV_FILE   Shell file of `export NAME='value'` lines with the
+#                             plugin's settings; read first, so its values win.
 #   CLAUDE_COPILOT_DATA_DIR   The plugin's data folder (copilot-api state). The
 #                             plugin sets it; without it no copilot-api is used.
 #   ANTHROPIC_MODEL, ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL,
 #   ANTHROPIC_DEFAULT_HAIKU_MODEL
 #                             Copilot models for Default and Claude Code's aliases.
 #   CLAUDE_AGENT_ACP          Command of the ACP adapter (default: the adapter
-#                             bundled with the plugin, else claude-agent-acp on PATH,
-#                             else npx -y @agentclientprotocol/claude-agent-acp).
+#                             bundled with the plugin, else claude-agent-acp on
+#                             PATH; nothing is downloaded).
 #   CLAUDE_CODE_EXECUTABLE    Claude Code binary the adapter runs (default: claude
 #                             on PATH, else the adapter's bundled one).
 #   CLAUDE_COPILOT_ALL_MODELS, CLAUDE_COPILOT_ACP_HIDE_OPTIONS,
 #   CLAUDE_COPILOT_ASK_PLAN_APPROVAL, CLAUDE_COPILOT_SANDBOX: see the proxy.
 #
-# Arguments: bb adds --bb-permission-mode=<full|accept-edits> (the agent entry's
+# Arguments: bb adds --bb-permission-mode=<full|accept-edits> (the provider's
 # permissionCli); they go to the proxy, which takes that one off.
 set -euo pipefail
 
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # bb starts agents with a minimal PATH; add the usual install locations
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+if [[ -n "${CLAUDE_COPILOT_ENV_FILE:-}" && -r "$CLAUDE_COPILOT_ENV_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CLAUDE_COPILOT_ENV_FILE"
+fi
 
 # Claude Code against copilot-api's Anthropic Messages API (as the Claude Code
 # (Copilot) provider configures it)
@@ -57,7 +65,8 @@ elif [[ -f "$here/../node_modules/@agentclientprotocol/claude-agent-acp/dist/ind
 elif command -v claude-agent-acp >/dev/null; then
     adapter=(claude-agent-acp)
 else
-    adapter=(npx -y @agentclientprotocol/claude-agent-acp)
+    echo "claude-copilot-acp: the ACP adapter was not found: run npm install in the plugin folder, or set the ACP adapter command setting." >&2
+    exit 1
 fi
 
 # one line per launch (no keys), for troubleshooting

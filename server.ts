@@ -1,22 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import {
-  AGENT_ID,
-  DISPLAY_NAME,
-  PROVIDER_ID,
-  managedAgent,
-  provisionAgent,
-  readCurrentEntry,
-  unregisterAgent,
-  type CustomAgent,
-  type ManagedEnv,
-} from "./agent-entry.ts";
+import { ACP_PLUGIN_ID, AGENT_ID, readLegacyEntry, removeLegacyEntry, userEnv, type CustomAgent } from "./legacy-entry.ts";
+import { DISPLAY_NAME, PROVIDER_ID, envFileContent, isTakenError, parseExtraEnv, providerDeclaration } from "./provider.ts";
 import {
   apiGet,
   copilotApiMain,
@@ -44,21 +35,23 @@ import {
 import { DASHBOARD_PATHS, SHIM, VIEWER_CSP } from "./dashboard.ts";
 import { apiRequest, getConfig, instanceUsage, listInstances, OWN_INSTANCE_ID, sessionUsage, setConfig } from "./usage.ts";
 
-// Claude Code on GitHub Copilot as a bb ACP agent:
-// - registers the agent (id "claude-copilot", provider "acp-claude-copilot") in
-//   bb's ACP agents plugin, pointing at this plugin's own bin/claude-copilot-acp,
-//   from a background service on every load and on settings changes (the install
-//   folder changes with each plugin update); when that fails, bb shows the plugin
-//   as needing configuration;
-// - passes the plugin settings (models, adapter, sandbox) and the data folder to
-//   that agent through the entry's env;
-// - declares bb's permission modes (permissionCli) and manual compaction in the
-//   entry, so Accept Edits runs Bash in Claude Code's sandbox (see
-//   bin/acp-session.mjs) and /compact shows in the composer;
+// Claude Code on GitHub Copilot as a bb provider:
+// - registers the provider "acp-claude-copilot" itself (provider.ts): bb runs
+//   this plugin's bin/claude-copilot-acp through the SDK's ACP bridge, which the
+//   plugin's bb.host entry (host.ts) re-exports. The declaration adds bb's
+//   permission modes (Accept Edits runs Bash in Claude Code's sandbox, see
+//   bin/acp-session.mjs), /compact and forks (side chats);
+// - hands the provider over from earlier versions, which registered it as a
+//   customAgents entry in bb's ACP agents plugin: removes that entry (keeping
+//   the user's own variables), waits until that plugin drops the provider, and
+//   registers it. Threads store only the provider id, so they keep working;
+//   when registering fails, bb shows the plugin as needing configuration;
+// - writes the plugin settings (models, adapter, sandbox, extra variables) and
+//   the data folder to an env file the launcher reads on every start;
 // - runs GitHub sign-in (copilot-api's device flow) and start/stop of the
 //   plugin's own copilot-api for the settings section and `bb acp-claude-copilot`;
 //   the agent starts copilot-api itself when a thread needs it;
-// - adds `bb acp-claude-copilot status | repair | unregister | login | logout | start | stop`;
+// - adds `bb acp-claude-copilot status | repair | login | logout | start | stop`;
 // - serves each thread's Copilot credits to the app's context segment, and
 //   invalidates that read when the thread's usage changes;
 // - publishes the Copilot premium-request quota for bb's Provider usage panel.
@@ -78,6 +71,7 @@ const DEFAULT_SETTINGS: AcpSettings = {
   adapterCommand: "",
   idleStopMinutes: 30,
   sandbox: true,
+  extraEnv: "",
 };
 
 /** How often a watched thread's credits are read again (only while a window shows them). */
@@ -85,9 +79,11 @@ const CREDITS_POLL_MS = 5000;
 
 const ADAPTER = join("node_modules", "@agentclientprotocol", "claude-agent-acp");
 
-/** The entry's env for these settings and the plugin's data folder. */
-export function managedEnvFor(s: AcpSettings, dataDir: string): ManagedEnv {
+/** The agent's environment for these settings and the plugin's data folder. */
+export function agentEnvFor(s: AcpSettings, dataDir: string): Record<string, string | undefined> {
   return {
+    // the user's own variables first, so the settings below win
+    ...parseExtraEnv(s.extraEnv),
     CLAUDE_COPILOT_DATA_DIR: dataDir,
     ANTHROPIC_MODEL: s.defaultModel?.trim(),
     ANTHROPIC_DEFAULT_OPUS_MODEL: s.opusModel?.trim(),
@@ -95,9 +91,43 @@ export function managedEnvFor(s: AcpSettings, dataDir: string): ManagedEnv {
     ANTHROPIC_DEFAULT_HAIKU_MODEL: s.haikuModel?.trim(),
     CLAUDE_COPILOT_ALL_MODELS: s.allModels === false ? "0" : undefined,
     CLAUDE_AGENT_ACP: s.adapterCommand?.trim(),
-    // only the opt-out is set, so the default leaves the entry unchanged
+    // only the opt-out is set
     CLAUDE_COPILOT_SANDBOX: s.sandbox === false ? "0" : undefined,
   };
+}
+
+const HANDOVER_ATTEMPTS = 40;
+const HANDOVER_DELAY_MS = 250;
+
+/**
+ * Registers the provider. While provider-acp still holds the id for the old
+ * customAgents entry, removes that entry once and retries until provider-acp
+ * has dropped the provider (it re-registers its agents on a settings change).
+ */
+export async function registerWithHandover(deps: {
+  register: () => { dispose(): void };
+  removeLegacyEntry: () => Promise<boolean>;
+  sleep: (ms: number) => Promise<void>;
+  attempts?: number;
+}): Promise<{ registration: { dispose(): void }; handedOver: boolean }> {
+  const attempts = deps.attempts ?? HANDOVER_ATTEMPTS;
+  let removed = false;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return { registration: deps.register(), handedOver: removed };
+    } catch (error) {
+      if (!isTakenError(error)) throw error;
+      if (!removed) removed = await deps.removeLegacyEntry();
+      if (attempt + 1 >= attempts) {
+        throw new Error(
+          removed
+            ? `${ACP_PLUGIN_ID} still holds the provider ${PROVIDER_ID} after its entry was removed`
+            : `the provider ${PROVIDER_ID} is registered by another plugin (see: bb provider list)`,
+        );
+      }
+      await deps.sleep(HANDOVER_DELAY_MS);
+    }
+  }
 }
 
 const isExecutable = (path: string) => {
@@ -276,6 +306,7 @@ export default function plugin(bb: BbPluginApi) {
   }
   async function setSettings(patch: Partial<AcpSettings>): Promise<AcpSettings> {
     const next = acpSettingsSchema.parse({ ...(await getSettings()), ...patch });
+    parseExtraEnv(next.extraEnv); // throws on anything but NAME=value pairs
     await bb.storage.kv.set(SETTINGS_KEY, next);
     void sync().catch(() => {});
     return next;
@@ -296,28 +327,68 @@ export default function plugin(bb: BbPluginApi) {
     return join(root, "plugins", PLUGIN_ID, "host-data");
   }
 
-  // -- Agent entry -------------------------------------------------------------
+  // -- Provider ---------------------------------------------------------------
 
-  /** Adds or updates the agent entry; true when it changed. */
-  async function provision(): Promise<boolean> {
-    if (!isExecutable(launcher)) throw new Error(`the launcher ${launcher} is missing or not executable; reinstall the plugin`);
-    return provisionAgent(bb, launcher, managedEnvFor(await getSettings(), await dataDir()));
+  const envFilePath = async () => join(await dataDir(), "agent.env");
+
+  /** Writes the env file from the settings; the launcher reads it on every start. */
+  async function writeAgentFiles(): Promise<void> {
+    const dir = await dataDir();
+    const envFile = await envFilePath();
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await writeFile(envFile, envFileContent(agentEnvFor(await getSettings(), dir)), { mode: 0o600 });
+    await chmod(envFile, 0o600);
   }
 
-  // one provisioning at a time; a failure marks the plugin as needing configuration
-  let provisioning: Promise<unknown> = Promise.resolve();
+  /** Carries the user's own variables from an earlier version's entry over to the Extra environment variables setting. */
+  async function carryOverUserEnv(entry: CustomAgent | undefined): Promise<void> {
+    const extra = userEnv(entry);
+    if (Object.keys(extra).length === 0) return;
+    const s = await getSettings();
+    const merged = { ...extra, ...parseExtraEnv(s.extraEnv) };
+    await bb.storage.kv.set(SETTINGS_KEY, { ...s, extraEnv: Object.entries(merged).map(([k, v]) => `${k}=${v}`).join(" ") });
+    bb.log.info(`Carried over ${Object.keys(extra).join(", ")} from the old agent entry to Extra environment variables`);
+  }
+
+  let registration: { dispose(): void } | null = null;
+
+  /** Writes the agent's env file, registers the provider (handing it over from an old entry) and removes a leftover entry; true when anything changed. */
+  async function setUp(): Promise<boolean> {
+    if (!isExecutable(launcher)) throw new Error(`the launcher ${launcher} is missing or not executable; reinstall the plugin`);
+    const legacy = await readLegacyEntry(bb);
+    if (legacy?.entry !== undefined) await carryOverUserEnv(legacy.entry);
+    await writeAgentFiles();
+    let changed = false;
+    if (registration === null) {
+      const declaration = providerDeclaration(launcher, await envFilePath());
+      const result = await registerWithHandover({
+        register: () => bb.providers.register(declaration),
+        removeLegacyEntry: () => removeLegacyEntry(bb),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      });
+      registration = result.registration;
+      changed = true;
+      bb.log.info(`Registered the ${DISPLAY_NAME} provider ${PROVIDER_ID}${result.handedOver ? ` (handed over from ${ACP_PLUGIN_ID})` : ""}`);
+    }
+    // registered first (e.g. this plugin loaded before the ACP agents plugin): the old entry is only in the way
+    if (legacy?.entry !== undefined && (await removeLegacyEntry(bb))) changed = true;
+    return changed;
+  }
+
+  // one setup at a time; a failure marks the plugin as needing configuration
+  let settingUp: Promise<unknown> = Promise.resolve();
   const sync = () => {
-    const run = provisioning.then(provision);
-    provisioning = run.catch((error: unknown) => {
-      const message = `Could not register the ${DISPLAY_NAME} agent: ${error instanceof Error ? error.message : String(error)}`;
+    const run = settingUp.then(setUp);
+    settingUp = run.catch((error: unknown) => {
+      const message = `Could not register the ${DISPLAY_NAME} provider: ${error instanceof Error ? error.message : String(error)}`;
       bb.log.error(message);
       bb.status.needsConfiguration(`${message}. Fix it, then run: bb ${PLUGIN_ID} repair`);
     });
     return run;
   };
 
-  // after the factory, so a slow ACP agents plugin doesn't hold up loading
-  bb.background.service("provision", {
+  // after the factory, so the handover doesn't hold up loading
+  bb.background.service("provider", {
     async start() {
       await sync().catch(() => {});
     },
@@ -643,7 +714,7 @@ export default function plugin(bb: BbPluginApi) {
   ];
   const show = (s: AppStatus) => `${copilotLines(s).join("\n")}\n`;
 
-  /** Launcher, adapter, agent entry, provider registration, sandbox and copilot-api; non-zero exit when something needs attention. */
+  /** Launcher, adapter, provider registration, agent settings file, sandbox and copilot-api; non-zero exit when something needs attention. */
   async function status(): Promise<CliResult> {
     const s = await getSettings();
     const lines: string[] = [];
@@ -658,27 +729,34 @@ export default function plugin(bb: BbPluginApi) {
         ? `ACP adapter: ${adapter} (ACP adapter command setting)`
         : bundled
           ? `ACP adapter: bundled @agentclientprotocol/claude-agent-acp ${bundled}`
-          : "ACP adapter: NOT BUNDLED (run npm install in the plugin folder); falls back to claude-agent-acp on PATH or npx",
+          : "ACP adapter: NOT BUNDLED (run npm install in the plugin folder); falls back to claude-agent-acp on PATH",
     );
-    const current = await readCurrentEntry(bb);
-    if (current === null) {
-      ok = false;
-      lines.push("ACP customAgents entry: unknown (the ACP agents plugin's settings can't be read)");
-    } else {
-      const entry: CustomAgent | undefined = current.entry;
-      const wanted = managedAgent(launcher, managedEnvFor(s, await dataDir()), entry);
-      const state = entry === undefined ? "MISSING" : JSON.stringify(entry) === JSON.stringify(wanted) ? "current" : "OUTDATED";
-      ok &&= state === "current";
-      lines.push(`ACP customAgents entry "${AGENT_ID}": ${state}${state === "current" ? "" : ` (run: bb ${PLUGIN_ID} repair)`}`);
-    }
-    let registered = false;
+    let provider: { pluginId?: string; capabilities?: { supportsFork?: boolean } } | undefined;
     try {
-      registered = (await bb.sdk.providers.list()).some((provider) => provider.id === PROVIDER_ID);
+      provider = (await bb.sdk.providers.list()).find((p) => p.id === PROVIDER_ID) as typeof provider;
     } catch {
       // reported as not registered
     }
-    ok &&= registered;
-    lines.push(`bb provider ${PROVIDER_ID}: ${registered ? "registered" : "NOT registered"}`);
+    const ours = provider?.pluginId === PLUGIN_ID;
+    ok &&= ours;
+    lines.push(
+      `bb provider ${PROVIDER_ID}: ${
+        provider === undefined
+          ? `NOT registered (run: bb ${PLUGIN_ID} repair)`
+          : ours
+            ? `registered by this plugin${provider.capabilities?.supportsFork ? ", side chats on" : ""}`
+            : `registered by ${provider.pluginId ?? "another plugin"} (run: bb ${PLUGIN_ID} repair)`
+      }`,
+    );
+    const legacy = await readLegacyEntry(bb);
+    if (legacy?.entry !== undefined) {
+      ok = false;
+      lines.push(`Old ${ACP_PLUGIN_ID} customAgents entry "${AGENT_ID}": LEFTOVER (run: bb ${PLUGIN_ID} repair)`);
+    }
+    const envFile = await envFilePath();
+    const envOk = existsSync(envFile);
+    ok &&= envOk;
+    lines.push(`Agent settings file: ${envFile}${envOk ? "" : ` (MISSING; run: bb ${PLUGIN_ID} repair)`}`);
     lines.push(`Bash sandbox in Accept Edits: ${s.sandbox === false ? "off" : "on"}`);
     const copilot = await appStatus();
     ok &&= copilot.signedIn;
@@ -689,27 +767,13 @@ export default function plugin(bb: BbPluginApi) {
   const fail = (error: unknown): CliResult => ({ exitCode: 1, stderr: `${error instanceof Error ? error.message : String(error)}\n` });
 
   const commands: Record<string, { summary: string; run: () => Promise<CliResult> }> = {
-    status: { summary: "Check the launcher, adapter, agent entry, provider registration and copilot-api", run: status },
+    status: { summary: "Check the launcher, adapter, provider registration, agent settings and copilot-api", run: status },
     repair: {
-      summary: "Rewrite the agent entry from the plugin settings",
+      summary: "Rewrite the agent's settings and register the provider again",
       async run() {
         try {
           const changed = await sync();
           return { exitCode: 0, stdout: `${PLUGIN_ID}: ${changed ? "repaired" : "already up to date"}\n` };
-        } catch (error) {
-          return fail(error);
-        }
-      },
-    },
-    unregister: {
-      summary: "Remove the agent entry before removing the plugin",
-      async run() {
-        try {
-          const changed = await unregisterAgent(bb);
-          return {
-            exitCode: 0,
-            stdout: `${PLUGIN_ID}: ${changed ? "unregistered; remove the plugin now, or reload it to register again" : "not registered"}\n`,
-          };
         } catch (error) {
           return fail(error);
         }
@@ -744,7 +808,7 @@ export default function plugin(bb: BbPluginApi) {
 
   bb.cli.register({
     name: PLUGIN_ID,
-    summary: `Check, repair or remove the ${DISPLAY_NAME} agent entry, and manage its copilot-api.`,
+    summary: `Check or repair the ${DISPLAY_NAME} provider, and manage its copilot-api.`,
     commands: Object.entries(commands).map(([name, { summary }]) => ({ name, summary, usage: `${PLUGIN_ID} ${name}` })),
     async run(argv) {
       const name = argv[0] ?? "status";

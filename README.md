@@ -26,10 +26,10 @@ It has these parts:
   plan mode ask before it implements (see [Plan mode](#plan-mode)).
 - `bin/copilot-api.mjs`: copilot-api's state, start and stop, used by the proxy
   and the plugin.
-- The bb plugin. It registers the launcher as the custom agent `claude-copilot`
-  (provider `acp-claude-copilot`) in bb's ACP agents plugin and keeps that
-  entry up to date, declares bb's permission modes and `/compact` for it, and
-  passes the plugin settings to the agent. It gives the
+- The bb plugin. It registers the provider `acp-claude-copilot` itself, which
+  bb runs through the plugin SDK's ACP bridge, with bb's permission modes,
+  `/compact`, forks and side chats, and passes the plugin settings to the
+  agent. It gives the
   provider the Claude mark and the Copilot glyph as its icon, monochrome to
   tell it apart from the colored icon of the Claude Copilot provider plugin.
   It has the same settings page and **Copilot usage** page as the Claude
@@ -64,7 +64,7 @@ The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
   minutes; the Bash sandbox in Accept Edits and the ACP adapter
   command; copilot-api's `config.json` (saving reloads it; the
   plugin-managed gateway keys are hidden and preserved). The settings are kept
-  in the plugin's storage and written to the agent entry's `env`.
+  in the plugin's storage and written to the agent's settings file.
 - **Copilot usage** page and sidebar-footer button: copilot-api's usage
   dashboard in a sandboxed iframe whose data requests go through the plugin
   (`/viewer`, `/proxy` routes), so it works from bb on a phone too. Tabs at
@@ -84,11 +84,11 @@ The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
 
 ## Requirements
 
-- bb 0.49 or later, with the built-in ACP agents plugin (`provider-acp`).
+- bb 0.49 or later, on macOS or Linux (tested on macOS). The provider runs on
+  the machine bb runs on.
 - A GitHub Copilot subscription. Model availability and premium-request use
   follow your Copilot plan.
 - Node.js and [Claude Code](https://claude.com/claude-code) (`claude` on PATH).
-  Without `claude`, the ACP adapter uses its bundled Claude Code.
 
 ## Setup
 
@@ -102,11 +102,9 @@ The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
    bb plugin install .
    ```
 
-   On load, the plugin adds **Claude Code (Copilot ACP)** to bb's ACP agents.
-   It updates that entry on every load and settings change, so a plugin update
-   that moves the launcher needs no action. Other custom agents are left
-   alone. If it can't (for example because the ACP agents plugin is disabled),
-   bb shows the plugin as needing configuration, with the reason.
+   On load, the plugin registers the provider **Claude Code (Copilot ACP)**.
+   If that fails, bb shows the plugin as needing configuration, with the
+   reason. Updating from 0.1.x: see [Updating from 0.1](#updating-from-01).
 
 2. Sign in to GitHub: Settings → Plugins → **Claude Copilot ACP provider** →
    **Sign in with GitHub** (at the top), then enter the code on github.com. Or run
@@ -180,9 +178,13 @@ subagents and background tasks.
 
 ### Settings and launcher variables
 
-The plugin passes its settings (from its settings page) to the agent as
-environment variables in the agent entry. You can add more variables to the entry's `env` in the ACP agents
-settings; the plugin keeps them.
+The plugin writes its settings (from its settings page) as environment
+variables to a file only your user can read
+(`~/.bb/plugins/acp-claude-copilot/host-data/agent.env`), which the launcher
+reads on every start. A change applies when a thread's agent next starts. To
+pass other variables to the agent, add them to **Extra environment
+variables** as `NAME=value` pairs separated by spaces, e.g.
+`CLAUDE_COPILOT_ASK_PLAN_APPROVAL=0`; the settings in the table win over them.
 
 | Setting | Variable | Default |
 | --- | --- | --- |
@@ -192,7 +194,7 @@ settings; the plugin keeps them.
 | Haiku model | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claude-haiku-5-5` |
 | All Copilot models in the picker | `CLAUDE_COPILOT_ALL_MODELS` (`0` when off) | on |
 | Bash sandbox in Accept Edits | `CLAUDE_COPILOT_SANDBOX` (`0` turns it off) | on (unset) |
-| ACP adapter command | `CLAUDE_AGENT_ACP` | the plugin's bundled adapter, else `claude-agent-acp` on PATH, else `npx` |
+| ACP adapter command | `CLAUDE_AGENT_ACP` | the plugin's bundled adapter, else `claude-agent-acp` on PATH |
 | (data folder) | `CLAUDE_COPILOT_DATA_DIR` | the plugin's `host-data` folder |
 
 Launcher-only variables: `CLAUDE_CODE_EXECUTABLE` (default `claude` on PATH),
@@ -208,7 +210,7 @@ appends one line (time, data folder, model, adapter; no keys) to
 ## Permission modes and the sandbox
 
 bb offers ACP agents two permission modes, **Accept Edits** and **Full
-Access**. The plugin declares both in the agent entry (`permissionCli`): bb
+Access**. The plugin declares both for its provider (`permissionCli`): bb
 starts the launcher with `--bb-permission-mode=accept-edits` or
 `--bb-permission-mode=full`, and restarts the agent with the new value when a
 thread's mode changes. The proxy takes that argument off the adapter's command
@@ -233,7 +235,8 @@ sets itself wins. Claude Code's own permission mode (Auto, Default, ...) is a
 separate session option of the adapter and isn't changed.
 
 `/compact` is available in the composer (`supportsManualCompaction`): the
-adapter runs Claude Code's own compaction.
+adapter runs Claude Code's own compaction. Forks and side chats work too
+(`fork: "tip"`): the adapter forks the Claude Code session.
 
 The proxy also turns Claude Code's prompt suggestions off on every session
 start (`promptSuggestions: false`). The ACP adapter turns them on for every
@@ -259,9 +262,9 @@ and instead:
 Your answer goes back to Claude as the permission decision. To change the
 plan, pick "No, keep planning": Claude stays in plan mode and the turn ends,
 so send your feedback as a message and Claude revises the plan. Dismissing
-the question also keeps Claude in plan mode. Set
-`CLAUDE_COPILOT_ASK_PLAN_APPROVAL=0` in the agent's `env` to leave the request
-to bb instead.
+the question also keeps Claude in plan mode. Add
+`CLAUDE_COPILOT_ASK_PLAN_APPROVAL=0` to **Extra environment variables** to
+leave the request to bb instead.
 
 ## Usage
 
@@ -276,25 +279,46 @@ prices, which says nothing about Copilot billing, so the proxy removes it.
 Token counts and the context meter stay, and the credits in the context row
 above the prompt show what the session used in Copilot AI credits.
 
-bb lists the entry under the raw provider id, because ACP custom agents don't
-have the usage capability.
+bb lists the entry under the raw provider id: the Provider usage panel takes
+the name only from providers that declare the usage capability, and this one
+doesn't.
 
 ## Commands
 
 ```sh
-bb acp-claude-copilot status      # launcher, adapter, agent entry, provider, sign-in, copilot-api
-bb acp-claude-copilot repair      # rewrite the agent entry from the plugin settings
-bb acp-claude-copilot unregister  # remove the agent entry
+bb acp-claude-copilot status   # launcher, adapter, provider, agent settings file, sign-in, copilot-api
+bb acp-claude-copilot repair   # rewrite the agent settings file and register the provider again
 ```
 
 `status` exits non-zero when something needs attention (including a missing
-GitHub sign-in; a stopped copilot-api is normal) and never prints keys. bb has
-no uninstall hook, so remove the agent entry before removing the plugin:
+GitHub sign-in; a stopped copilot-api is normal) and never prints keys.
 
-```sh
-bb acp-claude-copilot unregister
-bb plugin remove acp-claude-copilot
-```
+Before removing the plugin, run `bb acp-claude-copilot logout`: it stops
+copilot-api and deletes the GitHub token. `bb plugin remove
+acp-claude-copilot` then removes the provider and the plugin's settings, but
+bb leaves the plugin's data folder (`~/.bb/plugins/acp-claude-copilot/host-data`:
+copilot-api's home with its usage database and gateway keys, and the agent
+settings file); delete it to remove everything. The launcher's log stays in
+`${XDG_STATE_HOME:-~/.local/state}/claude-copilot-acp`.
+
+## Updating from 0.1
+
+Versions 0.1.x added the agent as a custom agent (`claude-copilot`) to bb's
+ACP agents plugin, which registered the provider for it. From 0.2 the plugin
+registers the same provider itself, which gives it forks and side chats; bb
+turns those off for custom agents.
+
+The first load of 0.2 hands the provider over: it removes the
+`claude-copilot` entry this plugin added from the ACP agents plugin's settings
+(other custom agents and the setting's formatting are left alone), waits until
+that plugin drops the provider, and registers it. The provider id stays
+`acp-claude-copilot`, so existing threads continue with their Claude Code
+sessions. Variables you had added to the entry's `env` move to **Extra
+environment variables**. There is nothing to do before updating, and the
+`unregister` command of 0.1 is gone.
+
+Going back to 0.1.x: remove 0.2 first, then install the older version, which
+adds its entry again. Both can't hold the provider id at the same time.
 
 ## Development
 
@@ -304,9 +328,12 @@ type-checks it. `npm test` runs the tests: the proxy and launcher end to end
 against a fake adapter and a fake copilot-api (permission modes and the
 sandbox, models, plan approval; none of your own Claude Code, Copilot or bb
 environment reaches them), copilot-api's state handling, start and stop, the
-agent entry, and the plugin itself on the SDK's fake host (agent entry, setup
-errors, commands, the credits watch). CI runs the typecheck and tests on every
-push and pull request. The plugin's agent skill is in
+provider declaration, the handover from 0.1, and the plugin itself on the
+SDK's fake host (registration, handover, settings, setup errors, commands, the
+credits watch). A conformance test runs bb's provider bridge suite (sessions,
+turns, resume, fork, interrupt) against the provider as bb runs it: the SDK's
+ACP bridge, the launcher and the proxy, with a fake adapter. CI runs the
+typecheck, the tests and `bb plugin build` on every push and pull request. The plugin's agent skill is in
 `skills/claude-copilot-acp/SKILL.md`; bb gives it to agents in every thread.
 
 ## License

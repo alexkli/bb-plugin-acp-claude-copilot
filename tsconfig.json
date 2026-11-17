@@ -24,7 +24,9 @@
   "include": [
     "server.ts",
     "app.tsx",
-    "agent-entry.ts",
+    "legacy-entry.ts",
+    "provider.ts",
+    "host.ts",
     "contract.ts",
     "dashboard.ts",
     "usage.ts",

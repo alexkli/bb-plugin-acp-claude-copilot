@@ -120,3 +120,12 @@ test("launcher: the ACP adapter command setting wins over the bundled adapter", 
   assert.equal(sandboxOf(received), undefined);
   assert.match(launcherLog(dir), /adapter=\//);
 });
+
+test("launcher: reads the plugin's settings from CLAUDE_COPILOT_ENV_FILE, which wins over its own environment", async () => {
+  const { dir, launcher } = pluginCopy();
+  const envFile = join(dir, "agent.env");
+  writeFileSync(envFile, "export ANTHROPIC_MODEL='gpt-5'\nexport CLAUDE_COPILOT_SANDBOX='0'\n");
+  const received = await launch(launcher, dir, ["--bb-permission-mode=accept-edits"], { CLAUDE_COPILOT_ENV_FILE: envFile, ANTHROPIC_MODEL: "other" });
+  assert.equal(sandboxOf(received), undefined, "the sandbox setting from the file applies");
+  assert.match(launcherLog(dir), /model=gpt-5 adapter=node\n$/);
+});

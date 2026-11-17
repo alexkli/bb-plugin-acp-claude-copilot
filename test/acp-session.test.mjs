@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PERMISSION_ARG, SESSION_OPTIONS, sandboxFor, takePermissionMode, withSandbox, withSessionOptions } from "../bin/acp-session.mjs";
-import { PERMISSION_CLI } from "../agent-entry.ts";
+import { PERMISSION_CLI } from "../provider.ts";
 
 const SANDBOX = sandboxFor({ permissionMode: "accept-edits", enabled: true });
 

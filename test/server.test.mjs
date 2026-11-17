@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,17 +9,26 @@ import plugin from "../server.ts";
 import { closeUsageDb } from "../usage.ts";
 
 const OTHER = { id: "gh-copilot", displayName: "GitHub Copilot", command: "copilot", args: ["--acp"] };
+const OLD_ENTRY = {
+  id: "claude-copilot",
+  displayName: "Claude Code (Copilot ACP)",
+  command: "/old/bin/claude-copilot-acp",
+  args: [],
+  env: { CLAUDE_COPILOT_DATA_DIR: "/old/host-data", ANTHROPIC_MODEL: "claude-opus-5-5", CLAUDE_COPILOT_ASK_PLAN_APPROVAL: "0" },
+};
 const SESSION = "0b7c3f4e-1d2a-4b5c-8d9e-0f1a2b3c4d5e";
 
 /**
  * Loads the plugin against a fake bb whose ACP agents plugin stores
- * customAgents in memory; bb's data folder is a temp folder, so copilot-api's
- * state is too (nothing is started).
+ * customAgents in memory and whose provider list shows what this plugin
+ * registered; bb's data folder is a temp folder, so copilot-api's state is too
+ * (nothing is started).
  */
-async function load({ customAgents = JSON.stringify([OTHER]), registered = true, acpDown = false, providerId = "acp-claude-copilot" } = {}) {
+async function load({ customAgents = JSON.stringify([OTHER]), acpDown = false, providerId = "acp-claude-copilot" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "copilot-server-"));
   const dataDir = join(root, "plugins", "acp-claude-copilot", "host-data");
   let stored = customAgents;
+  let harnessRef;
   const { bb, harness } = createFakePluginHost({
     pluginId: "acp-claude-copilot",
     sdk: {
@@ -33,7 +42,10 @@ async function load({ customAgents = JSON.stringify([OTHER]), registered = true,
           return { pluginId: "provider-acp", values };
         },
       },
-      providers: { list: async () => (registered ? [{ id: "acp-claude-copilot" }] : []) },
+      providers: {
+        list: async () =>
+          harnessRef.registrations.providerRegistrations.map((p) => ({ id: p.id, pluginId: "acp-claude-copilot", capabilities: { supportsFork: p.capabilities.fork !== "none" } })),
+      },
       system: { config: async () => ({ dataDir: root }) },
       threads: {
         get: async ({ threadId }) => ({ id: threadId, providerId }),
@@ -42,10 +54,11 @@ async function load({ customAgents = JSON.stringify([OTHER]), registered = true,
       },
     },
   });
+  harnessRef = harness;
   await plugin(bb);
   const agents = () => (stored === "" ? [] : JSON.parse(stored));
-  const ours = () => agents().find((agent) => agent.id === "claude-copilot");
-  return { harness, dataDir, agents, ours };
+  const env = () => readFileSync(join(dataDir, "agent.env"), "utf8");
+  return { harness, dataDir, agents, env, raw: () => stored };
 }
 
 const cli = async (harness, ...argv) => {
@@ -58,94 +71,96 @@ const signIn = (dataDir) => {
   writeFileSync(join(dataDir, "copilot-api", "github_token"), "gho_test");
 };
 
-test("the provision service adds the entry next to other agents, with the data folder and bb's permission modes", async () => {
-  const { harness, dataDir, agents, ours } = await load();
-  await harness.runService("provision").done;
+test("the provider service registers acp-claude-copilot with forks and writes the agent's settings with the data folder", async () => {
+  const { harness, dataDir, agents, env } = await load();
+  await harness.runService("provider").done;
   assert.deepEqual(harness.needsConfigurationMessages, []);
-  assert.deepEqual(agents()[0], OTHER);
-  const entry = ours();
-  assert.match(entry.command, /\/bin\/claude-copilot-acp$/);
-  assert.deepEqual(entry.permissionCli, { full: ["--bb-permission-mode=full"], workspaceWrite: ["--bb-permission-mode=accept-edits"] });
-  assert.equal(entry.supportsManualCompaction, true);
-  assert.equal(entry.env.CLAUDE_COPILOT_DATA_DIR, dataDir);
-  assert.equal(entry.env.ANTHROPIC_MODEL, "claude-opus-5-5");
-  assert.equal("CLAUDE_COPILOT_SANDBOX" in entry.env, false);
+  assert.deepEqual(harness.registrations.providerRegistrations.map((p) => [p.id, p.capabilities.fork]), [["acp-claude-copilot", "tip"]]);
+  const spec = harness.registrations.providerRegistrations[0].experimental_bridgeOptions.acpLaunchSpec;
+  assert.match(spec.command, /\/bin\/claude-copilot-acp$/);
+  assert.deepEqual(spec.env, { CLAUDE_COPILOT_ENV_FILE: join(dataDir, "agent.env") });
+  assert.deepEqual(spec.permissionCli, { full: ["--bb-permission-mode=full"], workspaceWrite: ["--bb-permission-mode=accept-edits"] });
+  assert.match(env(), new RegExp(`^export CLAUDE_COPILOT_DATA_DIR='${dataDir}'$`, "m"));
+  assert.match(env(), /^export ANTHROPIC_MODEL='claude-opus-5-5'$/m);
+  assert.doesNotMatch(env(), /CLAUDE_COPILOT_SANDBOX/);
+  assert.equal(statSync(join(dataDir, "agent.env")).mode & 0o777, 0o600);
+  assert.deepEqual(agents(), [OTHER], "no customAgents entry");
 });
 
-test("turning the sandbox off in the settings sets CLAUDE_COPILOT_SANDBOX=0", async () => {
-  const { harness, ours } = await load();
-  await harness.runService("provision").done;
-  const view = await harness.callRpc("setSettings", { sandbox: false });
+test("handover: the old entry is removed, other agents stay, and the user's own variables move to Extra environment variables", async () => {
+  const { harness, agents, env, raw } = await load({ customAgents: JSON.stringify([OTHER, OLD_ENTRY]) });
+  await harness.runService("provider").done;
+  assert.deepEqual(agents(), [OTHER]);
+  assert.equal(raw(), JSON.stringify([OTHER]), "the setting keeps its formatting");
+  assert.match(env(), /^export CLAUDE_COPILOT_ASK_PLAN_APPROVAL='0'$/m);
+  assert.doesNotMatch(env(), /old\/host-data/, "managed variables come from the settings, not the old entry");
+  const view = await harness.callRpc("getSettings", null);
+  assert.equal(view.settings.extraEnv, "CLAUDE_COPILOT_ASK_PLAN_APPROVAL=0");
+});
+
+test("a claude-copilot agent this plugin didn't add is left alone", async () => {
+  const usersOwn = { id: "claude-copilot", command: "/usr/local/bin/my-claude" };
+  const text = `${JSON.stringify([OTHER, usersOwn], null, 4)}\n`;
+  const { harness, raw } = await load({ customAgents: text });
+  await harness.runService("provider").done;
+  assert.equal(raw(), text);
+});
+
+test("settings: the sandbox opt-out and extra variables reach the agent's settings; bad extra variables are refused", async () => {
+  const { harness, env } = await load();
+  await harness.runService("provider").done;
+  const view = await harness.callRpc("setSettings", { sandbox: false, extraEnv: "FOO=1 CLAUDE_COPILOT_DATA_DIR=/x" });
   assert.equal(view.settings.sandbox, false);
-  await cli(harness, "repair"); // waits for the provisioning the change started
-  assert.equal(ours().env.CLAUDE_COPILOT_SANDBOX, "0");
+  await cli(harness, "repair"); // waits for the setup the change started
+  assert.match(env(), /^export CLAUDE_COPILOT_SANDBOX='0'$/m);
+  assert.match(env(), /^export FOO='1'$/m);
+  assert.doesNotMatch(env(), /CLAUDE_COPILOT_DATA_DIR='\/x'/, "the settings win over extra variables");
+  await assert.rejects(harness.callRpc("setSettings", { extraEnv: "not a pair" }), /NAME=value/);
 });
 
-test("status passes once registered and signed in; an outdated entry fails it until repair", async () => {
-  const stale = { id: "claude-copilot", displayName: "Claude Code (Copilot ACP)", command: "/old/claude-copilot-acp", args: [], env: {} };
-  const { harness, dataDir, ours } = await load({ customAgents: JSON.stringify([OTHER, stale]) });
+test("status: fails before registration and with a leftover entry, passes once set up and signed in; repair sets up", async () => {
+  const { harness, dataDir } = await load({ customAgents: JSON.stringify([OTHER, OLD_ENTRY]) });
   signIn(dataDir);
-
   const before = await cli(harness, "status");
   assert.equal(before.exitCode, 1);
-  assert.match(before.stdout, /ACP customAgents entry "claude-copilot": OUTDATED \(run: bb acp-claude-copilot repair\)/);
+  assert.match(before.stdout, /bb provider acp-claude-copilot: NOT registered \(run: bb acp-claude-copilot repair\)/);
+  assert.match(before.stdout, /Old provider-acp customAgents entry "claude-copilot": LEFTOVER/);
 
-  const repaired = await cli(harness, "repair");
-  assert.deepEqual(repaired, { exitCode: 0, stdout: "acp-claude-copilot: repaired\n", stderr: "" });
-  assert.match(ours().command, /\/bin\/claude-copilot-acp$/);
-
+  assert.deepEqual(await cli(harness, "repair"), { exitCode: 0, stdout: "acp-claude-copilot: repaired\n", stderr: "" });
   const after = await cli(harness, "status");
   assert.equal(after.exitCode, 0, after.stdout);
   assert.match(after.stdout, /^Launcher: .*\/bin\/claude-copilot-acp\n/);
   assert.match(after.stdout, /ACP adapter: bundled @agentclientprotocol\/claude-agent-acp 0\.107\.3\n/);
-  assert.match(after.stdout, /ACP customAgents entry "claude-copilot": current\n/);
-  assert.match(after.stdout, /bb provider acp-claude-copilot: registered\n/);
+  assert.match(after.stdout, /bb provider acp-claude-copilot: registered by this plugin, side chats on\n/);
+  assert.doesNotMatch(after.stdout, /LEFTOVER/);
+  assert.match(after.stdout, /Agent settings file: .*agent\.env\n/);
   assert.match(after.stdout, /Bash sandbox in Accept Edits: on\n/);
   assert.match(after.stdout, /copilot-api: stopped \(starts with the next message\)\nGitHub: signed in\n/);
   assert.deepEqual(await cli(harness, "repair"), { exitCode: 0, stdout: "acp-claude-copilot: already up to date\n", stderr: "" });
 });
 
-test("status fails without a GitHub sign-in, or when bb has not registered the provider", async () => {
-  const unsigned = await load();
-  await unsigned.harness.runService("provision").done;
-  const a = await cli(unsigned.harness, "status");
-  assert.equal(a.exitCode, 1);
-  assert.match(a.stdout, /GitHub: NOT signed in \(run: bb acp-claude-copilot login\)/);
-
-  const unregistered = await load({ registered: false });
-  signIn(unregistered.dataDir);
-  await unregistered.harness.runService("provision").done;
-  const b = await cli(unregistered.harness, "status");
-  assert.equal(b.exitCode, 1);
-  assert.match(b.stdout, /bb provider acp-claude-copilot: NOT registered/);
-});
-
-test("unregister removes only this plugin's entry", async () => {
-  const { harness, agents } = await load();
-  await harness.runService("provision").done;
-  assert.equal(agents().length, 2);
-  const first = await cli(harness, "unregister");
-  assert.equal(first.exitCode, 0);
-  assert.match(first.stdout, /unregistered/);
-  assert.deepEqual(agents(), [OTHER]);
-  assert.deepEqual(await cli(harness, "unregister"), { exitCode: 0, stdout: "acp-claude-copilot: not registered\n", stderr: "" });
-});
-
-test("when the ACP agents plugin's settings can't be read, bb shows the plugin as needing configuration", async () => {
-  const { harness } = await load({ acpDown: true });
-  await harness.runService("provision").done;
-  assert.equal(harness.needsConfigurationMessages.length, 1);
-  assert.match(harness.needsConfigurationMessages[0], /Could not register the Claude Code \(Copilot ACP\) agent: .*not available.*bb acp-claude-copilot repair/);
+test("status fails without a GitHub sign-in", async () => {
+  const { harness } = await load();
+  await harness.runService("provider").done;
   const status = await cli(harness, "status");
   assert.equal(status.exitCode, 1);
-  assert.match(status.stdout, /ACP customAgents entry: unknown/);
+  assert.match(status.stdout, /GitHub: NOT signed in \(run: bb acp-claude-copilot login\)/);
+});
+
+test("without the ACP agents plugin there is nothing to hand over: the provider registers anyway", async () => {
+  const { harness, dataDir } = await load({ acpDown: true });
+  signIn(dataDir);
+  await harness.runService("provider").done;
+  assert.deepEqual(harness.needsConfigurationMessages, []);
+  assert.equal(harness.registrations.providerRegistrations.length, 1);
+  assert.equal((await cli(harness, "status")).exitCode, 0);
 });
 
 test("an unknown subcommand names the valid ones", async () => {
   const { harness } = await load();
-  const { exitCode, stderr } = await cli(harness, "nope");
+  const { exitCode, stderr } = await cli(harness, "unregister");
   assert.equal(exitCode, 2);
-  assert.match(stderr, /status \| repair \| unregister \| login \| logout \| start \| stop/);
+  assert.match(stderr, /status \| repair \| login \| logout \| start \| stop/);
 });
 
 /** copilot-api's usage database with one request of `nano` AI units for the session. */
