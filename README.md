@@ -235,6 +235,11 @@ separate session option of the adapter and isn't changed.
 `/compact` is available in the composer (`supportsManualCompaction`): the
 adapter runs Claude Code's own compaction.
 
+The proxy also turns Claude Code's prompt suggestions off on every session
+start (`promptSuggestions: false`). The ACP adapter turns them on for every
+client, so each turn would end with one more model request, with the whole
+conversation as input, that predicts your next prompt; bb never shows it.
+
 ## Plan mode
 
 In plan mode, Claude ends planning with "Ready to code?", which the ACP

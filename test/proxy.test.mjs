@@ -60,6 +60,8 @@ async function runProxy(permissionArgs, env = {}) {
   return run(process.execPath, [join(PLUGIN, "bin", "claude-copilot-acp-proxy.mjs"), process.execPath, adapter, ...permissionArgs], cleanEnv(dir, env), toAgent, 1 + toAgent.length);
 }
 
+/** A session start as the proxy forwards it without a sandbox: prompt suggestions off, nothing else changed. */
+const WITHOUT_SUGGESTIONS = (msg) => ({ ...msg, params: { ...msg.params, _meta: { claudeCode: { options: { promptSuggestions: false } } } } });
 const sent = (received, method) => received.find((m) => m.params?.method === method).params;
 const sandboxOf = (received, method = "session/new") => sent(received, method).params._meta?.claudeCode?.options?.sandbox;
 
@@ -74,6 +76,7 @@ test("proxy: Accept Edits runs Bash in the sandbox on every session start; bb's 
     network: { allowLocalBinding: true },
     filesystem: { allowWrite: ["/storage"] },
   });
+  assert.equal(sent(received, "session/new").params._meta.claudeCode.options.promptSuggestions, false);
   assert.equal(sandboxOf(received, "session/load").enabled, true, "a resumed session gets it too");
   assert.equal(sandboxOf(received, "session/load").filesystem, undefined);
   assert.deepEqual(sent(received, "session/set_mode"), SET_MODE, "other requests pass unchanged");
@@ -83,7 +86,7 @@ test("proxy: Full Access, an unknown mode and the opt-out get no sandbox", async
   for (const [args, env] of [[["--bb-permission-mode=full"], {}], [[], {}], [["--bb-permission-mode=accept-edits"], { CLAUDE_COPILOT_SANDBOX: "0" }]]) {
     const received = await runProxy(args, env);
     assert.deepEqual(received[0].params.argv, [], JSON.stringify(args));
-    assert.deepEqual(sent(received, "session/new"), SESSION_NEW, JSON.stringify({ args, env }));
+    assert.deepEqual(sent(received, "session/new"), WITHOUT_SUGGESTIONS(SESSION_NEW), JSON.stringify({ args, env }));
   }
 });
 

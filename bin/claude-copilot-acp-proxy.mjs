@@ -35,6 +35,9 @@
 // adapter's command line, and in Accept Edits adds Claude Code's Bash sandbox
 // to every session start, with the settings bb's Claude Code provider uses.
 // CLAUDE_COPILOT_SANDBOX=0 turns this off.
+// Every session start also gets the Claude Code options in SESSION_OPTIONS
+// (acp-session.mjs): prompt suggestions off, since bb never shows them and
+// each one costs a full-context model request per turn.
 //
 // CLAUDE_COPILOT_DATA_DIR is the plugin's data folder (copilot-api state);
 // without it the proxy starts no copilot-api and leaves the environment alone.
@@ -47,7 +50,7 @@ import { homedir } from "node:os";
 import { basename, join, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { rewriteMessage } from "./acp-rewrite.mjs";
-import { sandboxFor, takePermissionMode, withSandbox } from "./acp-session.mjs";
+import { sandboxFor, takePermissionMode, withSessionOptions } from "./acp-session.mjs";
 import { ensure, listModels, modelConfig, modelLabels } from "./copilot-api.mjs";
 import {
   isPlanApprovalRequest,
@@ -183,9 +186,9 @@ const fromBb = createInterface({ input: process.stdin, crlfDelay: Infinity });
 
 /** A bb -> agent line with the sandbox added to session starts (Accept Edits only). */
 const toAgentLine = (line) => {
-  if (SANDBOX === null || !line.includes('"session/')) return line;
+  if (!line.includes('"session/')) return line;
   try {
-    return JSON.stringify(withSandbox(JSON.parse(line), SANDBOX));
+    return JSON.stringify(withSessionOptions(JSON.parse(line), { sandbox: SANDBOX }));
   } catch {
     return line; // not JSON: pass through untouched
   }

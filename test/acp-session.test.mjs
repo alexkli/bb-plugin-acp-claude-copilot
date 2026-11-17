@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PERMISSION_ARG, sandboxFor, takePermissionMode, withSandbox } from "../bin/acp-session.mjs";
+import { PERMISSION_ARG, SESSION_OPTIONS, sandboxFor, takePermissionMode, withSandbox, withSessionOptions } from "../bin/acp-session.mjs";
 import { PERMISSION_CLI } from "../agent-entry.ts";
 
 const SANDBOX = sandboxFor({ permissionMode: "accept-edits", enabled: true });
@@ -64,4 +64,35 @@ test("withSandbox leaves other messages, and everything without a sandbox, alone
   assert.equal(withSandbox(answer, SANDBOX), answer);
   const start = { method: "session/new", params: { cwd: "/w" } };
   assert.equal(withSandbox(start, null), start);
+});
+
+const newSession = (options) => ({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "session/new",
+  params: { cwd: "/w", mcpServers: [], ...(options ? { _meta: { other: 1, claudeCode: { options } } } : {}) },
+});
+const optionsOf = (msg) => msg.params._meta.claudeCode.options;
+
+test("withSessionOptions turns prompt suggestions off on every session start, with or without the sandbox", () => {
+  assert.deepEqual(SESSION_OPTIONS, { promptSuggestions: false });
+  for (const method of ["session/new", "session/load", "session/resume", "session/fork"]) {
+    assert.deepEqual(optionsOf(withSessionOptions({ ...newSession(), method })), { promptSuggestions: false }, method);
+  }
+  assert.deepEqual(optionsOf(withSessionOptions(newSession(), { sandbox: SANDBOX })), { promptSuggestions: false, sandbox: SANDBOX });
+});
+
+test("withSessionOptions: an option the client set wins, and its other _meta stays", () => {
+  const msg = withSessionOptions(newSession({ promptSuggestions: true, model: "x" }));
+  assert.deepEqual(optionsOf(msg), { promptSuggestions: true, model: "x" });
+  assert.equal(msg.params._meta.other, 1);
+  const set = newSession({ promptSuggestions: true });
+  assert.equal(withSessionOptions(set), set, "nothing to add: the same message");
+});
+
+test("withSessionOptions leaves other messages alone", () => {
+  const prompt = { jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: "s", prompt: [] } };
+  assert.equal(withSessionOptions(prompt, { sandbox: SANDBOX }), prompt);
+  const result = { jsonrpc: "2.0", id: 1, result: {} };
+  assert.equal(withSessionOptions(result), result);
 });
