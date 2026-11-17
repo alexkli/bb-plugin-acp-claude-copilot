@@ -11,7 +11,7 @@
 //   model dropdowns (from Copilot's live model list), the ACP adapter and the
 //   copilot-api config.json editor;
 // - usage dashboard page (one tab per local copilot-api instance) + footer button;
-// - session credits in the context row above the composer of Copilot ACP threads (session-credits.tsx).
+// - session credits under the prompt of Copilot ACP threads, next to bb's context-window control (session-credits.tsx).
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   definePluginApp,
@@ -25,7 +25,7 @@ import { Input } from "@/components/ui/input";
 import type { AcpSettings, AppStatus, appContract, CopilotModel, Instance, SettingsView } from "./contract";
 import { CLAUDE_MARK, COPILOT_PATHS } from "./icon-paths";
 import { MESSAGE_FETCH, MESSAGE_RESPONSE, VIRTUAL } from "./dashboard";
-import { SessionCreditsDetails, SessionCreditsSummary, useSessionCreditsVisible } from "./session-credits";
+import { SessionCreditsAction, SessionCreditsCompact } from "./session-credits";
 
 const PROVIDER_ID = "acp-claude-copilot";
 const BASE = "/api/v1/plugins/acp-claude-copilot/http";
@@ -666,13 +666,11 @@ export default definePluginApp((app) => {
     path: PANEL_PATH,
     component: UsagePage,
   });
-  app.slots.experimental_threadContextSegment({
+  app.composer.customize({
     id: "session-credits",
-    title: "Copilot credits",
-    group: "5_usage",
-    summary: SessionCreditsSummary,
-    details: SessionCreditsDetails,
-    useVisible: useSessionCreditsVisible,
+    scopes: ["thread"],
+    actions: [{ id: "session-credits", component: SessionCreditsAction }],
+    banners: [{ id: "session-credits-compact", chrome: "bare", component: SessionCreditsCompact }],
   });
   app.experimental_sidebarFooter.register({
     kind: "disclosure",

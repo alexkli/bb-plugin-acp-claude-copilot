@@ -33,7 +33,7 @@ It has these parts:
   provider the Claude mark and the Copilot glyph as its icon, monochrome to
   tell it apart from the colored icon of the Claude Copilot provider plugin.
   It has the same settings page and **Copilot usage** page as the Claude
-  Copilot provider plugin, shows each thread's Copilot credits above the
+  Copilot provider plugin, shows each thread's Copilot credits under the
   prompt (see [In bb](#in-bb)),
   and adds the Copilot premium-request quota to bb's Provider usage panel. It
   uses only the public plugin SDK.
@@ -74,13 +74,19 @@ The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
   `~/.local/share/copilot-api`). Other
   instances are read from a read-only snapshot (`VACUUM INTO`) with
   copilot-api's own query code (`usage-reader.mjs`).
-- **Copilot credits above the prompt**: the Copilot AI credits the thread's
+- **Copilot credits under the prompt**: the Copilot AI credits the thread's
   Claude Code session has used so far, as copilot-api recorded them (keyed by
-  the session id, which the ACP adapter uses as Claude Code's session id), in
-  the thread's context row next to bb's changed files. Click it for a
-  breakdown by model. Only on Claude Code (Copilot ACP) threads. While a window
-  shows it, the plugin checks the session's usage every 5 seconds and updates
-  the value when it changes; the window itself doesn't poll.
+  the session id, which the ACP adapter uses as Claude Code's session id),
+  next to bb's context-window control. Only on Claude Code (Copilot ACP)
+  threads. Click it for the breakdown: requests, tokens in and out, and credits per
+  model. While a window shows it, the plugin checks the session's usage every
+  5 seconds and updates the value when it changes; the window itself doesn't
+  poll. bb has no plugin slot in that row yet, so the plugin moves its own
+  element there and depends on bb's composer layout: if a bb update changes
+  that layout, the credits show in the composer's action row instead (before
+  the voice and send buttons). On phones and narrow panes they show in a line
+  above the composer. The plugin removes its element and observer when the
+  composer goes away.
 
 ## Requirements
 
@@ -276,8 +282,8 @@ refresh starts it.
 
 Threads show no cost from Claude Code: it estimates cost at Anthropic list
 prices, which says nothing about Copilot billing, so the proxy removes it.
-Token counts and the context meter stay, and the credits in the context row
-above the prompt show what the session used in Copilot AI credits.
+Token counts and the context meter stay, and the credits under the prompt
+show what the session used in Copilot AI credits.
 
 bb lists the entry under the raw provider id: the Provider usage panel takes
 the name only from providers that declare the usage capability, and this one

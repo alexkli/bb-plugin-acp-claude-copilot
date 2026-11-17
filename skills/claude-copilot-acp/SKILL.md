@@ -78,7 +78,7 @@ compaction.
 ## Usage and troubleshooting
 
 - Threads show no cost (Claude Code's estimate is at Anthropic list prices);
-  the thread's context row shows the session's Copilot AI credits instead
+  the coin control under the prompt shows the session's Copilot AI credits instead
   (1 credit = $0.01). The Provider usage panel shows the premium-request quota.
 - Each launch appends one line (data folder, model, adapter; no keys) to
   `${XDG_STATE_HOME:-~/.local/state}/claude-copilot-acp/launcher.log`.
