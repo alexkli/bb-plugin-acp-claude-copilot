@@ -1,49 +1,28 @@
-// Composer indicator: Copilot AI credits the thread's Claude Code session has
-// used so far, as copilot-api recorded them. Shown under the prompt next to
-// bb's context-window control when that footer is found, otherwise as a
-// regular composer action. Only on Claude Code (Copilot ACP) threads.
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { useComposer, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
-import type { appContract, SessionCredits, SessionUsage } from "./contract";
+// Thread context segment: Copilot AI credits the thread's Claude Code session
+// has used so far, as copilot-api recorded them. Shown in the context row above
+// the composer of Claude Code (Copilot ACP) threads; the summary toggles a
+// breakdown by model below the row.
+//
+// The value comes from bb's shared RPC query cache. While a window shows the
+// segment, the server watches the thread's usage and invalidates the read
+// when it changes (server.ts, sessionCredits), so the client doesn't poll.
+import {
+  experimental_useRpcQuery,
+  type ExperimentalThreadContextSegmentInput,
+  type ExperimentalThreadContextSegmentProps,
+} from "@get-bb/plugin-sdk/app";
+import { appContract, type SessionCredits, type SessionUsage } from "./contract";
 
-const POLL_MS = 5000;
 const DOLLARS_PER_CREDIT = 0.01;
 
-function useSessionCredits(threadId: string | null): SessionCredits | null {
-  const rpc = useRpc<typeof appContract>();
-  const connection = useRealtimeConnectionState();
-  const [state, setState] = useState<{ threadId: string; value: SessionCredits } | null>(null);
-  useEffect(() => {
-    if (!threadId) return;
-    let alive = true;
-    let busy = false;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const refresh = async () => {
-      if (busy || document.hidden) return;
-      busy = true;
-      try {
-        const value = await rpc.call("sessionCredits", { threadId });
-        if (!alive) return;
-        setState({ threadId, value });
-        // A thread's provider never changes: stop polling other providers' threads.
-        if (value.status === "unsupported") clearInterval(timer);
-      } catch {
-        // keep the last value; the next poll retries
-      } finally {
-        busy = false;
-      }
-    };
-    void refresh();
-    timer = setInterval(refresh, POLL_MS);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, [threadId, rpc, connection]);
-  return state?.threadId === threadId ? state.value : null;
+function useSessionCredits(threadId: string): SessionCredits | null {
+  return experimental_useRpcQuery({ contract: appContract, method: "sessionCredits", input: { threadId } }).data ?? null;
+}
+
+/** Only Claude Code (Copilot ACP) threads show the segment. */
+export function useSessionCreditsVisible({ threadId }: ExperimentalThreadContextSegmentInput): boolean {
+  const credits = useSessionCredits(threadId);
+  return credits !== null && credits.status !== "unsupported";
 }
 
 function formatCredits(credits: number): string {
@@ -70,6 +49,51 @@ function CoinIcon() {
   );
 }
 
+function describe(credits: SessionCredits): string {
+  switch (credits.status) {
+    case "ok":
+      return `Copilot credits this session: ${formatCredits(credits.usage.credits)} (${formatDollars(credits.usage.credits)}), ${credits.usage.requests} requests`;
+    case "pending":
+      return "Copilot credits: no requests yet";
+    case "error":
+      return `Copilot credits unavailable: ${credits.message}`;
+    default:
+      return "Copilot credits";
+  }
+}
+
+export function SessionCreditsSummary({ threadId, isExpanded, onToggle }: ExperimentalThreadContextSegmentProps) {
+  const credits = useSessionCredits(threadId);
+  if (credits === null || credits.status === "unsupported") return null;
+  const usage = credits.status === "ok" ? credits.usage : null;
+  const title = describe(credits);
+  return (
+    <button
+      type="button"
+      title={isExpanded ? undefined : title}
+      aria-label={title}
+      aria-expanded={isExpanded}
+      disabled={!usage}
+      onClick={onToggle}
+      className="flex min-h-6 shrink-0 items-center gap-1 rounded px-2 py-1 text-xs tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:hover:bg-transparent"
+      data-testid="acp-claude-copilot-session-credits"
+    >
+      <CoinIcon />
+      <span>{usage ? formatCredits(usage.credits) : "–"}</span>
+    </button>
+  );
+}
+
+export function SessionCreditsDetails({ threadId, isExpanded }: ExperimentalThreadContextSegmentProps) {
+  const credits = useSessionCredits(threadId);
+  if (!isExpanded || credits?.status !== "ok") return null;
+  return (
+    <div className="px-3 pb-2 pt-1">
+      <Details usage={credits.usage} sessionId={credits.sessionId} />
+    </div>
+  );
+}
+
 function Details({ usage, sessionId }: { usage: SessionUsage; sessionId: string }) {
   return (
     <div className="flex flex-col gap-2 text-xs">
@@ -82,7 +106,7 @@ function Details({ usage, sessionId }: { usage: SessionUsage; sessionId: string 
         {usage.unpriced > 0 && <> · {usage.unpriced} without a credit amount</>}
       </div>
       {usage.models.length > 0 && (
-        <table className="w-full">
+        <table className="w-full max-w-md">
           <tbody>
             {usage.models.map((m) => (
               <tr key={m.model}>
@@ -100,202 +124,4 @@ function Details({ usage, sessionId }: { usage: SessionUsage; sessionId: string 
       <code className="truncate text-[10px] text-muted-foreground">{sessionId}</code>
     </div>
   );
-}
-
-function CreditControl({ credits }: { credits: SessionCredits }) {
-  const [open, setOpen] = useState(false);
-  const button = useRef<HTMLButtonElement>(null);
-  const panel = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ right: number; bottom: number } | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const place = () => {
-      const rect = button.current?.getBoundingClientRect();
-      if (rect) setPosition({ right: Math.max(8, window.innerWidth - rect.right), bottom: window.innerHeight - rect.top + 8 });
-    };
-    place();
-    const onPointer = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (!panel.current?.contains(target) && !button.current?.contains(target)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setOpen(false);
-    window.addEventListener("resize", place);
-    document.addEventListener("pointerdown", onPointer, true);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("resize", place);
-      document.removeEventListener("pointerdown", onPointer, true);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  if (credits.status === "unsupported") return null;
-  const usage = credits.status === "ok" ? credits.usage : null;
-  const label = usage ? formatCredits(usage.credits) : "–";
-  const title =
-    credits.status === "ok"
-      ? `Copilot credits this session: ${formatCredits(credits.usage.credits)} (${formatDollars(credits.usage.credits)}), ${credits.usage.requests} requests`
-      : credits.status === "pending"
-        ? "Copilot credits: no requests yet"
-        : `Copilot credits unavailable: ${credits.message}`;
-
-  return (
-    <>
-      <button
-        ref={button}
-        type="button"
-        title={open ? undefined : title}
-        aria-label={title}
-        aria-expanded={open}
-        disabled={!usage}
-        // the composer focuses its editor on mousedown otherwise
-        onMouseDown={(event) => event.stopPropagation()}
-        onClick={() => setOpen((v) => !v)}
-        className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs tabular-nums text-muted-foreground hover:bg-accent hover:text-foreground disabled:hover:bg-transparent"
-        data-testid="acp-claude-copilot-session-credits"
-      >
-        <CoinIcon />
-        <span>{label}</span>
-      </button>
-      {open &&
-        usage &&
-        credits.status === "ok" &&
-        position &&
-        createPortal(
-          <div
-            ref={panel}
-            role="dialog"
-            aria-label="Copilot session credits"
-            data-bb-plugin-root=""
-            data-bb-plugin="acp-claude-copilot"
-            onMouseDown={(event) => event.stopPropagation()}
-            style={{ position: "fixed", right: position.right, bottom: position.bottom, zIndex: 50 }}
-            className="w-80 max-w-[calc(100vw-16px)] rounded-lg border bg-popover p-3 text-popover-foreground shadow-md"
-          >
-            <Details usage={usage} sessionId={credits.sessionId} />
-          </div>,
-          document.body,
-        )}
-    </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Placement under the prompt
-//
-// bb has no SDK slot for the composer footer (where the context-window control
-// sits) yet. Like the community "Copilot session credits" plugin (MIT,
-// github.com/lalitjeevanrao/bb-plugins), we move only our own portal container
-// into that footer, right before the context-window button, and fall back to
-// the regular composer action slot when the footer does not look as expected.
-// Replace this when bb adds a footer slot.
-
-// Several plugins may put their container in front of the context-window
-// button (or at the end of the group while bb shows no button). A container
-// counts as placed when only other plugins' containers stand between it and
-// the button, so containers never move each other, but bb's own controls that
-// mount later (session options, permission selector) can't end up after it.
-// One that has to be moved over and over anyway (another plugin fighting for
-// the exact spot) gives up and renders in place, so the page can never loop.
-const MAX_MOVES = 20;
-const MOVE_WINDOW_MS = 2000;
-
-/** Whether only plugin containers stand between `node` and `end` (null: the end of its parent). */
-function onlyPluginRootsUntil(node: Node, end: Element | null): boolean {
-  for (let next = node.nextSibling; next !== end; next = next.nextSibling) {
-    if (!(next instanceof Element) || !next.hasAttribute("data-bb-plugin-root")) return false;
-  }
-  return true;
-}
-
-function attachFooterTarget(anchor: HTMLElement | null, change: (target: HTMLElement | null) => void): () => void {
-  const root = anchor?.closest("[data-app-composer]");
-  if (!anchor || !root) {
-    change(null);
-    return () => {};
-  }
-  let host: HTMLElement | null = null;
-  let moves: number[] = [];
-  let gaveUp = false;
-  const ours = (el: Element) => el.closest("[data-app-composer]") === root;
-  const detach = () => {
-    host?.remove();
-    host = null;
-    change(null);
-  };
-  const sync = () => {
-    if (gaveUp) return;
-    const footers = Array.from(root.querySelectorAll("[data-follow-up-composer-footer]")).filter(ours);
-    const footer = footers.length === 1 ? footers[0]! : null;
-    const group = footer?.lastElementChild ?? null;
-    const buttons = footer ? Array.from(footer.querySelectorAll('button[aria-label^="Context window"]')).filter(ours) : [];
-    const button = buttons[0] ?? null;
-    const valid =
-      !!footer &&
-      !!group &&
-      footer.children.length === 2 &&
-      Array.from(footer.children).every((child) => child.tagName === "DIV") &&
-      group.classList.contains("items-center") &&
-      buttons.length <= 1 &&
-      (!button || button.parentNode === group);
-    if (!valid) return detach();
-    if (!host) {
-      host = anchor.ownerDocument.createElement("span");
-      host.setAttribute("data-bb-plugin-root", "");
-      host.setAttribute("data-bb-plugin", "acp-claude-copilot");
-      host.style.display = "contents";
-    }
-    const placed = host.parentNode === group && onlyPluginRootsUntil(host, button);
-    if (!placed) {
-      const now = Date.now();
-      moves = [...moves.filter((t) => now - t < MOVE_WINDOW_MS), now];
-      if (moves.length > MAX_MOVES) {
-        gaveUp = true;
-        observer.disconnect();
-        return detach();
-      }
-      group.insertBefore(host, button);
-    }
-    change(host);
-  };
-  const observer = new MutationObserver(sync);
-  observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-label"] });
-  sync();
-  return () => {
-    observer.disconnect();
-    host?.remove();
-  };
-}
-
-/** Attaches to bb's composer footer only on this provider's threads; elsewhere renders nothing. */
-function CreditPlacement() {
-  const composer = useComposer();
-  const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
-  const credits = useSessionCredits(threadId);
-  if (!credits || credits.status === "unsupported") return null;
-  return <FooterPlacement credits={credits} />;
-}
-
-function FooterPlacement({ credits }: { credits: SessionCredits }) {
-  const anchor = useRef<HTMLSpanElement>(null);
-  // undefined: not measured yet; null: no footer, render in place
-  const [target, setTarget] = useState<HTMLElement | null>();
-  useEffect(() => attachFooterTarget(anchor.current, setTarget), []);
-  return (
-    <>
-      <span hidden ref={anchor} />
-      {target ? createPortal(<CreditControl credits={credits} />, target) : target === null ? <CreditControl credits={credits} /> : null}
-    </>
-  );
-}
-
-/** Composer action (expanded layout). */
-export function SessionCreditsAction() {
-  return useComposer().layout === "compact" ? null : <CreditPlacement />;
-}
-
-/** Bare banner (compact layout, where actions are not shown). */
-export function SessionCreditsCompact() {
-  return useComposer().layout === "compact" ? <CreditPlacement /> : null;
 }

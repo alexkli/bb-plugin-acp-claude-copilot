@@ -29,10 +29,17 @@
 //    showing the thread (never switching anyone's view).
 //    CLAUDE_COPILOT_ASK_PLAN_APPROVAL=0 turns this off.
 //
+// In bb -> agent messages it applies bb's permission mode (bin/acp-session.mjs):
+// bb starts the launcher with --bb-permission-mode=accept-edits or =full (the
+// agent entry's permissionCli); the proxy takes that argument off the
+// adapter's command line, and in Accept Edits adds Claude Code's Bash sandbox
+// to every session start, with the settings bb's Claude Code provider uses.
+// CLAUDE_COPILOT_SANDBOX=0 turns this off.
+//
 // CLAUDE_COPILOT_DATA_DIR is the plugin's data folder (copilot-api state);
 // without it the proxy starts no copilot-api and leaves the environment alone.
 //
-// Usage: claude-copilot-acp-proxy.mjs <command> [args...]
+// Usage: claude-copilot-acp-proxy.mjs <command> [args...] [--bb-permission-mode=<mode>]
 import { spawn } from "node:child_process";
 import { watchFile } from "node:fs";
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
@@ -40,6 +47,7 @@ import { homedir } from "node:os";
 import { basename, join, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { rewriteMessage } from "./acp-rewrite.mjs";
+import { sandboxFor, takePermissionMode, withSandbox } from "./acp-session.mjs";
 import { ensure, listModels, modelConfig, modelLabels } from "./copilot-api.mjs";
 import {
   isPlanApprovalRequest,
@@ -105,7 +113,9 @@ const notRunningMessage = (status) =>
 const ensureForPrompt = () =>
   ensure({ dataDir: DATA_DIR, pluginDir: PLUGIN_DIR }).catch((error) => ({ running: false, signedIn: null, error: String(error) }));
 
-const [cmd, ...args] = process.argv.slice(2);
+const { permissionMode, rest: command } = takePermissionMode(process.argv.slice(2));
+const SANDBOX = sandboxFor({ permissionMode, enabled: process.env.CLAUDE_COPILOT_SANDBOX !== "0" });
+const [cmd, ...args] = command;
 const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "inherit"], env: childEnv });
 
 child.stdin.on("error", () => {});
@@ -171,6 +181,16 @@ const planFileFor = async (msg) => {
 // approval questions, and prompts while copilot-api can't be started
 const fromBb = createInterface({ input: process.stdin, crlfDelay: Infinity });
 
+/** A bb -> agent line with the sandbox added to session starts (Accept Edits only). */
+const toAgentLine = (line) => {
+  if (SANDBOX === null || !line.includes('"session/')) return line;
+  try {
+    return JSON.stringify(withSandbox(JSON.parse(line), SANDBOX));
+  } catch {
+    return line; // not JSON: pass through untouched
+  }
+};
+
 const fromBbLine = async (line) => {
   if (pendingPlanApprovals.size > 0 && line.includes("bb-plan-approval-")) {
     try {
@@ -202,12 +222,12 @@ const fromBbLine = async (line) => {
       }
     }
   }
-  child.stdin.write(line + "\n");
+  child.stdin.write(toAgentLine(line) + "\n");
 };
 
 let toAgent = Promise.resolve();
 fromBb.on("line", (line) => {
-  toAgent = toAgent.then(() => fromBbLine(line)).catch(() => child.stdin.write(line + "\n"));
+  toAgent = toAgent.then(() => fromBbLine(line)).catch(() => child.stdin.write(toAgentLine(line) + "\n"));
 });
 fromBb.on("close", () => toAgent.finally(() => child.stdin.end()));
 

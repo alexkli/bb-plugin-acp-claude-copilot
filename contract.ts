@@ -33,6 +33,8 @@ export const acpSettingsSchema = z.object({
   adapterCommand: z.string(),
   /** Stop copilot-api after this many minutes without a running thread; 0 keeps it running. */
   idleStopMinutes: z.number().int().nonnegative(),
+  /** Run Bash in Claude Code's OS sandbox when a thread uses Accept Edits. */
+  sandbox: z.boolean(),
 });
 export type AcpSettings = z.infer<typeof acpSettingsSchema>;
 
@@ -96,6 +98,9 @@ export const sessionCreditsSchema = z.discriminatedUnion("status", [
 ]);
 export type SessionCredits = z.infer<typeof sessionCreditsSchema>;
 
+/** Tag of a thread's sessionCredits read; the server invalidates it when the thread's usage changes. */
+export const sessionCreditsTag = (threadId: string) => `session-credits:${threadId}`;
+
 const none = z.null();
 
 /** App (settings section, usage page) <-> server. */
@@ -111,5 +116,9 @@ export const appContract = defineRpcContract({
   getConfig: { input: none, output: z.object({ json: z.string() }) },
   setConfig: { input: z.object({ json: z.string() }), output: z.object({ reloaded: z.boolean(), message: z.string().nullable() }) },
   listInstances: { input: none, output: z.object({ instances: z.array(instanceSchema) }) },
-  sessionCredits: { input: z.object({ threadId: z.string().min(1).max(200) }).strict(), output: sessionCreditsSchema },
+  sessionCredits: {
+    input: z.object({ threadId: z.string().min(1).max(200) }).strict(),
+    output: sessionCreditsSchema,
+    tags: (input) => [sessionCreditsTag(input.threadId)],
+  },
 });

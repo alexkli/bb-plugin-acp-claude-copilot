@@ -11,7 +11,7 @@
 //   model dropdowns (from Copilot's live model list), the ACP adapter and the
 //   copilot-api config.json editor;
 // - usage dashboard page (one tab per local copilot-api instance) + footer button;
-// - session credits indicator under the prompt of Copilot ACP threads (session-credits.tsx).
+// - session credits in the context row above the composer of Copilot ACP threads (session-credits.tsx).
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   definePluginApp,
@@ -25,7 +25,7 @@ import { Input } from "@/components/ui/input";
 import type { AcpSettings, AppStatus, appContract, CopilotModel, Instance, SettingsView } from "./contract";
 import { CLAUDE_MARK, COPILOT_PATHS } from "./icon-paths";
 import { MESSAGE_FETCH, MESSAGE_RESPONSE, VIRTUAL } from "./dashboard";
-import { SessionCreditsAction, SessionCreditsCompact } from "./session-credits";
+import { SessionCreditsDetails, SessionCreditsSummary, useSessionCreditsVisible } from "./session-credits";
 
 const PROVIDER_ID = "acp-claude-copilot";
 const BASE = "/api/v1/plugins/acp-claude-copilot/http";
@@ -465,10 +465,27 @@ function SettingsSection() {
       </Section>
 
       {settings ? (
-        <Section title="ACP adapter">
+        <Section title="Agent">
+          <label className="flex items-start gap-2 py-1.5 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={settings.sandbox}
+              disabled={settingsDisabled}
+              onChange={(e) => saveSettings({ sandbox: e.target.checked })}
+            />
+            <span className="flex flex-col gap-0.5">
+              <span className="font-medium">Bash sandbox in Accept Edits</span>
+              <span className="text-xs text-muted-foreground">
+                Run Claude Code's Bash commands in its OS sandbox when a thread uses Accept Edits, as bb's Claude Code provider does:
+                writes stay inside the workspace, and Claude asks before running a command outside the sandbox. Full Access never
+                uses the sandbox. A change applies when a thread's agent next starts.
+              </span>
+            </span>
+          </label>
           <Field
             label="ACP adapter command"
-            description="Optional command that runs @agentclientprotocol/claude-agent-acp, e.g. a pinned install. Default: claude-agent-acp on PATH, else npx."
+            description="Optional command that runs @agentclientprotocol/claude-agent-acp, e.g. a pinned install. Default: the adapter bundled with the plugin."
           >
             <CommitInput
               type="text"
@@ -637,11 +654,13 @@ export default definePluginApp((app) => {
     path: PANEL_PATH,
     component: UsagePage,
   });
-  app.composer.customize({
+  app.slots.experimental_threadContextSegment({
     id: "session-credits",
-    scopes: ["thread"],
-    actions: [{ id: "session-credits", component: SessionCreditsAction }],
-    banners: [{ id: "session-credits-compact", chrome: "bare", component: SessionCreditsCompact }],
+    title: "Copilot credits",
+    group: "5_usage",
+    summary: SessionCreditsSummary,
+    details: SessionCreditsDetails,
+    useVisible: useSessionCreditsVisible,
   });
   app.experimental_sidebarFooter.register({
     kind: "disclosure",

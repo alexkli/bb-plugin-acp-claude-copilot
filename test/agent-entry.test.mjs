@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AGENT_ID, DISPLAY_NAME, PROVIDER_ID, managedAgent, parseCustomAgents, withManagedAgent } from "../agent-entry.ts";
+import {
+  AGENT_ID,
+  DISPLAY_NAME,
+  PROVIDER_ID,
+  managedAgent,
+  parseCustomAgents,
+  withManagedAgent,
+  withoutManagedAgent,
+} from "../agent-entry.ts";
 
 const LAUNCHER = "/plugins/acp-claude-copilot/bin/claude-copilot-acp";
 
@@ -10,7 +18,7 @@ test("the agent is acp-claude-copilot, apart from the Claude Copilot provider pl
   assert.equal(DISPLAY_NAME, "Claude Code (Copilot ACP)");
 });
 
-test("a new entry runs the launcher with the managed env", () => {
+test("a new entry runs the launcher with the managed env, bb's permission modes and /compact", () => {
   const entry = managedAgent(LAUNCHER, { CLAUDE_COPILOT_DATA_DIR: "/data", ANTHROPIC_MODEL: "my-claude-gpt-5", CLAUDE_AGENT_ACP: "" });
   assert.deepEqual(entry, {
     nativeSkillRoots: { user: [".claude/skills"], project: [".claude/skills"] },
@@ -19,6 +27,8 @@ test("a new entry runs the launcher with the managed env", () => {
     command: LAUNCHER,
     args: [],
     env: { CLAUDE_COPILOT_DATA_DIR: "/data", ANTHROPIC_MODEL: "my-claude-gpt-5" },
+    permissionCli: { full: ["--bb-permission-mode=full"], workspaceWrite: ["--bb-permission-mode=accept-edits"] },
+    supportsManualCompaction: true,
   });
 });
 
@@ -55,4 +65,10 @@ test("parseCustomAgents refuses to overwrite a setting that is not a list", () =
   assert.deepEqual(parseCustomAgents('[{"id":"a"}]'), [{ id: "a" }]);
   assert.throws(() => parseCustomAgents('{"id":"a"}'), /refusing to overwrite/);
   assert.throws(() => parseCustomAgents(42), /must be a string/);
+});
+
+test("withoutManagedAgent removes only our entry; null when there is none", () => {
+  const other = { id: "claude-bedrock", command: "/b" };
+  assert.deepEqual(withoutManagedAgent([other, managedAgent(LAUNCHER, {})]), [other]);
+  assert.equal(withoutManagedAgent([other]), null);
 });

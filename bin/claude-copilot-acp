@@ -15,12 +15,16 @@
 #   ANTHROPIC_MODEL, ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL,
 #   ANTHROPIC_DEFAULT_HAIKU_MODEL
 #                             Copilot models for Default and Claude Code's aliases.
-#   CLAUDE_AGENT_ACP          Command of the ACP adapter (default: claude-agent-acp
-#                             on PATH, else npx -y @agentclientprotocol/claude-agent-acp).
+#   CLAUDE_AGENT_ACP          Command of the ACP adapter (default: the adapter
+#                             bundled with the plugin, else claude-agent-acp on PATH,
+#                             else npx -y @agentclientprotocol/claude-agent-acp).
 #   CLAUDE_CODE_EXECUTABLE    Claude Code binary the adapter runs (default: claude
 #                             on PATH, else the adapter's bundled one).
 #   CLAUDE_COPILOT_ALL_MODELS, CLAUDE_COPILOT_ACP_HIDE_OPTIONS,
-#   CLAUDE_COPILOT_ASK_PLAN_APPROVAL: see the proxy.
+#   CLAUDE_COPILOT_ASK_PLAN_APPROVAL, CLAUDE_COPILOT_SANDBOX: see the proxy.
+#
+# Arguments: bb adds --bb-permission-mode=<full|accept-edits> (the agent entry's
+# permissionCli); they go to the proxy, which takes that one off.
 set -euo pipefail
 
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -47,6 +51,9 @@ fi
 
 if [[ -n "${CLAUDE_AGENT_ACP:-}" ]]; then
     read -r -a adapter <<<"$CLAUDE_AGENT_ACP"
+elif [[ -f "$here/../node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js" ]]; then
+    # the adapter bundled with this plugin (a dependency in package.json)
+    adapter=(node "$here/../node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js")
 elif command -v claude-agent-acp >/dev/null; then
     adapter=(claude-agent-acp)
 else

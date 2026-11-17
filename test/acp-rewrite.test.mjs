@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { rewriteMessage } from "../bin/acp-rewrite.mjs";
 import { healthy, prepareHome, stop } from "../bin/copilot-api.mjs";
+import { cleanEnv } from "./fixtures/env.mjs";
 import { fakePluginDir } from "./fixtures/plugin-dir.mjs";
 
 const labels = new Map([
@@ -118,7 +119,7 @@ send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", upda
 `,
   );
   const proxy = spawn(process.execPath, [join(bin, "claude-copilot-acp-proxy.mjs"), process.execPath, agent], {
-    env: { ...process.env, CLAUDE_COPILOT_DATA_DIR: dataDir, ANTHROPIC_API_KEY: "sk-ant-must-not-pass", XDG_STATE_HOME: dir },
+    env: cleanEnv(dir, { CLAUDE_COPILOT_DATA_DIR: dataDir, ANTHROPIC_API_KEY: "sk-ant-must-not-pass" }),
     stdio: ["pipe", "pipe", "inherit"],
   });
   const received = [];
@@ -163,7 +164,7 @@ function startProxy(dir, dataDir) {
   const bin = join(pluginDir, "bin");
   cpSync(join(import.meta.dirname, "..", "bin"), bin, { recursive: true });
   const proxy = spawn(process.execPath, [join(bin, "claude-copilot-acp-proxy.mjs"), process.execPath, echoAgent(dir)], {
-    env: { ...process.env, CLAUDE_COPILOT_DATA_DIR: dataDir, XDG_STATE_HOME: dir },
+    env: cleanEnv(dir, { CLAUDE_COPILOT_DATA_DIR: dataDir }),
     stdio: ["pipe", "pipe", "pipe"],
   });
   const received = [];

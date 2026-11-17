@@ -6,7 +6,17 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { DISPLAY_NAME, PROVIDER_ID, provisionAgent } from "./agent-entry";
+import {
+  AGENT_ID,
+  DISPLAY_NAME,
+  PROVIDER_ID,
+  managedAgent,
+  provisionAgent,
+  readCurrentEntry,
+  unregisterAgent,
+  type CustomAgent,
+  type ManagedEnv,
+} from "./agent-entry.ts";
 import {
   apiGet,
   copilotApiMain,
@@ -24,24 +34,33 @@ import {
   acpSettingsSchema,
   appContract,
   claudeSessionIdSchema,
+  sessionCreditsTag,
   type AcpSettings,
   type AppStatus,
   type LoginStatus,
   type SessionCredits,
   type SettingsView,
-} from "./contract";
-import { DASHBOARD_PATHS, SHIM, VIEWER_CSP } from "./dashboard";
-import { apiRequest, getConfig, instanceUsage, listInstances, OWN_INSTANCE_ID, sessionUsage, setConfig } from "./usage";
+} from "./contract.ts";
+import { DASHBOARD_PATHS, SHIM, VIEWER_CSP } from "./dashboard.ts";
+import { apiRequest, getConfig, instanceUsage, listInstances, OWN_INSTANCE_ID, sessionUsage, setConfig } from "./usage.ts";
 
 // Claude Code on GitHub Copilot as a bb ACP agent:
 // - registers the agent (id "claude-copilot", provider "acp-claude-copilot") in
 //   bb's ACP agents plugin, pointing at this plugin's own bin/claude-copilot-acp,
-//   on every load (the install folder changes with each plugin update);
-// - passes the plugin settings (models, adapter) and the data folder to that
-//   agent through the entry's env;
+//   from a background service on every load and on settings changes (the install
+//   folder changes with each plugin update); when that fails, bb shows the plugin
+//   as needing configuration;
+// - passes the plugin settings (models, adapter, sandbox) and the data folder to
+//   that agent through the entry's env;
+// - declares bb's permission modes (permissionCli) and manual compaction in the
+//   entry, so Accept Edits runs Bash in Claude Code's sandbox (see
+//   bin/acp-session.mjs) and /compact shows in the composer;
 // - runs GitHub sign-in (copilot-api's device flow) and start/stop of the
 //   plugin's own copilot-api for the settings section and `bb acp-claude-copilot`;
 //   the agent starts copilot-api itself when a thread needs it;
+// - adds `bb acp-claude-copilot status | repair | unregister | login | logout | start | stop`;
+// - serves each thread's Copilot credits to the app's context segment, and
+//   invalidates that read when the thread's usage changes;
 // - publishes the Copilot premium-request quota for bb's Provider usage panel.
 const PLUGIN_ID = "acp-claude-copilot";
 const PACKAGE_NAME = "bb-plugin-acp-claude-copilot";
@@ -58,7 +77,59 @@ const DEFAULT_SETTINGS: AcpSettings = {
   allModels: true,
   adapterCommand: "",
   idleStopMinutes: 30,
+  sandbox: true,
 };
+
+/** How often a watched thread's credits are read again (only while a window shows them). */
+const CREDITS_POLL_MS = 5000;
+
+const ADAPTER = join("node_modules", "@agentclientprotocol", "claude-agent-acp");
+
+/** The entry's env for these settings and the plugin's data folder. */
+export function managedEnvFor(s: AcpSettings, dataDir: string): ManagedEnv {
+  return {
+    CLAUDE_COPILOT_DATA_DIR: dataDir,
+    ANTHROPIC_MODEL: s.defaultModel?.trim(),
+    ANTHROPIC_DEFAULT_OPUS_MODEL: s.opusModel?.trim(),
+    ANTHROPIC_DEFAULT_SONNET_MODEL: s.sonnetModel?.trim(),
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: s.haikuModel?.trim(),
+    CLAUDE_COPILOT_ALL_MODELS: s.allModels === false ? "0" : undefined,
+    CLAUDE_AGENT_ACP: s.adapterCommand?.trim(),
+    // only the opt-out is set, so the default leaves the entry unchanged
+    CLAUDE_COPILOT_SANDBOX: s.sandbox === false ? "0" : undefined,
+  };
+}
+
+const isExecutable = (path: string) => {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** The bundled adapter's version, or null when it isn't installed. */
+function bundledAdapterVersion(pluginDir: string): string | null {
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(join(pluginDir, ADAPTER, "package.json"), "utf8"));
+    const version = (manifest as { version?: unknown }).version;
+    return typeof version === "string" ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+  });
+}
+
+type CliResult = { exitCode: number; stdout?: string; stderr?: string };
 
 // -- Provider usage contract (bb's provider-usage plugin discovers it) -------------
 
@@ -206,7 +277,7 @@ export default function plugin(bb: BbPluginApi) {
   async function setSettings(patch: Partial<AcpSettings>): Promise<AcpSettings> {
     const next = acpSettingsSchema.parse({ ...(await getSettings()), ...patch });
     await bb.storage.kv.set(SETTINGS_KEY, next);
-    sync();
+    void sync().catch(() => {});
     return next;
   }
 
@@ -227,26 +298,30 @@ export default function plugin(bb: BbPluginApi) {
 
   // -- Agent entry -------------------------------------------------------------
 
-  let syncing = Promise.resolve();
+  /** Adds or updates the agent entry; true when it changed. */
+  async function provision(): Promise<boolean> {
+    if (!isExecutable(launcher)) throw new Error(`the launcher ${launcher} is missing or not executable; reinstall the plugin`);
+    return provisionAgent(bb, launcher, managedEnvFor(await getSettings(), await dataDir()));
+  }
+
+  // one provisioning at a time; a failure marks the plugin as needing configuration
+  let provisioning: Promise<unknown> = Promise.resolve();
   const sync = () => {
-    syncing = syncing
-      .then(async () => {
-        const s = await getSettings();
-        await provisionAgent(bb, launcher, {
-          CLAUDE_COPILOT_DATA_DIR: await dataDir(),
-          ANTHROPIC_MODEL: s.defaultModel?.trim(),
-          ANTHROPIC_DEFAULT_OPUS_MODEL: s.opusModel?.trim(),
-          ANTHROPIC_DEFAULT_SONNET_MODEL: s.sonnetModel?.trim(),
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: s.haikuModel?.trim(),
-          CLAUDE_COPILOT_ALL_MODELS: s.allModels === false ? "0" : undefined,
-          CLAUDE_AGENT_ACP: s.adapterCommand?.trim(),
-        });
-      })
-      .catch((error: unknown) => {
-        bb.log.error(`Could not update the ${DISPLAY_NAME} agent entry: ${String(error)}`);
-      });
+    const run = provisioning.then(provision);
+    provisioning = run.catch((error: unknown) => {
+      const message = `Could not register the ${DISPLAY_NAME} agent: ${error instanceof Error ? error.message : String(error)}`;
+      bb.log.error(message);
+      bb.status.needsConfiguration(`${message}. Fix it, then run: bb ${PLUGIN_ID} repair`);
+    });
+    return run;
   };
-  sync();
+
+  // after the factory, so a slow ACP agents plugin doesn't hold up loading
+  bb.background.service("provision", {
+    async start() {
+      await sync().catch(() => {});
+    },
+  });
 
   // -- copilot-api --------------------------------------------------------------
 
@@ -401,6 +476,24 @@ export default function plugin(bb: BbPluginApi) {
     }
   }
 
+  // While a window shows a thread's credits, read them again every few seconds
+  // and refresh the app's read when they change; stop for other providers'
+  // threads (a thread's provider never changes).
+  bb.rpc.experimental_whileWatched("sessionCredits", async (read, signal) => {
+    if (!("input" in read)) return;
+    const threadId = (read.input as { threadId?: unknown } | null)?.threadId;
+    if (typeof threadId !== "string") return;
+    let last = "";
+    while (!signal.aborted) {
+      const credits = await sessionCredits(threadId);
+      if (credits.status === "unsupported") return;
+      const json = JSON.stringify(credits);
+      if (last !== "" && json !== last) bb.rpc.experimental_invalidate([sessionCreditsTag(threadId)]);
+      last = json;
+      await sleep(CREDITS_POLL_MS, signal);
+    }
+  });
+
   async function settingsView(): Promise<SettingsView> {
     const dir = await dataDir();
     // a stopped copilot-api answers nothing; listModels then returns the cached list
@@ -451,10 +544,7 @@ export default function plugin(bb: BbPluginApi) {
     async start(signal) {
       let lastActive = Date.now();
       while (!signal.aborted) {
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, 60_000);
-          signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
-        });
+        await sleep(60_000, signal);
         if (signal.aborted) break;
         try {
           const { idleStopMinutes } = await getSettings();
@@ -543,57 +633,124 @@ export default function plugin(bb: BbPluginApi) {
 
   // -- CLI -----------------------------------------------------------------------------
 
-  const usage = [
-    `bb ${PLUGIN_ID} status   Show the plugin's copilot-api state`,
-    `bb ${PLUGIN_ID} login    Sign in to GitHub Copilot (device code)`,
-    `bb ${PLUGIN_ID} logout   Sign out of GitHub Copilot`,
-    `bb ${PLUGIN_ID} start    Start copilot-api`,
-    `bb ${PLUGIN_ID} stop     Stop copilot-api`,
-  ].join("\n");
+  const copilotLines = (s: AppStatus) => [
+    `copilot-api: ${s.running ? `running on 127.0.0.1:${s.port}` : "stopped (starts with the next message)"}`,
+    `GitHub: ${s.signedIn ? `signed in${s.account ? ` as ${s.account}` : ""}${s.plan ? ` (${s.plan})` : ""}` : `NOT signed in (run: bb ${PLUGIN_ID} login)`}`,
+    ...(s.running ? [`Copilot models: ${s.models}`] : []),
+    `copilot-api home: ${s.home ?? "unknown"}`,
+    `copilot-api log: ${s.log ?? "unknown"}`,
+    ...(s.error ? [`copilot-api error: ${s.error}`] : []),
+  ];
+  const show = (s: AppStatus) => `${copilotLines(s).join("\n")}\n`;
 
-  const show = (s: AppStatus) =>
-    [
-      `copilot-api: ${s.running ? `running on 127.0.0.1:${s.port}` : "stopped"}`,
-      `GitHub:      ${s.signedIn ? `signed in${s.account ? ` as ${s.account}` : ""}${s.plan ? ` (${s.plan})` : ""}` : `not signed in (run: bb ${PLUGIN_ID} login)`}`,
-      ...(s.running ? [`models:      ${s.models}`] : []),
-      `home:        ${s.home ?? "unknown"}`,
-      `log:         ${s.log ?? "unknown"}`,
-      ...(s.error ? [`error:       ${s.error}`] : []),
-    ].join("\n");
+  /** Launcher, adapter, agent entry, provider registration, sandbox and copilot-api; non-zero exit when something needs attention. */
+  async function status(): Promise<CliResult> {
+    const s = await getSettings();
+    const lines: string[] = [];
+    let ok = true;
+    const launcherOk = isExecutable(launcher);
+    ok &&= launcherOk;
+    lines.push(`Launcher: ${launcher}${launcherOk ? "" : " (MISSING or not executable)"}`);
+    const bundled = bundledAdapterVersion(pluginDir);
+    const adapter = s.adapterCommand?.trim();
+    lines.push(
+      adapter
+        ? `ACP adapter: ${adapter} (ACP adapter command setting)`
+        : bundled
+          ? `ACP adapter: bundled @agentclientprotocol/claude-agent-acp ${bundled}`
+          : "ACP adapter: NOT BUNDLED (run npm install in the plugin folder); falls back to claude-agent-acp on PATH or npx",
+    );
+    const current = await readCurrentEntry(bb);
+    if (current === null) {
+      ok = false;
+      lines.push("ACP customAgents entry: unknown (the ACP agents plugin's settings can't be read)");
+    } else {
+      const entry: CustomAgent | undefined = current.entry;
+      const wanted = managedAgent(launcher, managedEnvFor(s, await dataDir()), entry);
+      const state = entry === undefined ? "MISSING" : JSON.stringify(entry) === JSON.stringify(wanted) ? "current" : "OUTDATED";
+      ok &&= state === "current";
+      lines.push(`ACP customAgents entry "${AGENT_ID}": ${state}${state === "current" ? "" : ` (run: bb ${PLUGIN_ID} repair)`}`);
+    }
+    let registered = false;
+    try {
+      registered = (await bb.sdk.providers.list()).some((provider) => provider.id === PROVIDER_ID);
+    } catch {
+      // reported as not registered
+    }
+    ok &&= registered;
+    lines.push(`bb provider ${PROVIDER_ID}: ${registered ? "registered" : "NOT registered"}`);
+    lines.push(`Bash sandbox in Accept Edits: ${s.sandbox === false ? "off" : "on"}`);
+    const copilot = await appStatus();
+    ok &&= copilot.signedIn;
+    lines.push(...copilotLines(copilot));
+    return { exitCode: ok ? 0 : 1, stdout: `${lines.join("\n")}\n` };
+  }
+
+  const fail = (error: unknown): CliResult => ({ exitCode: 1, stderr: `${error instanceof Error ? error.message : String(error)}\n` });
+
+  const commands: Record<string, { summary: string; run: () => Promise<CliResult> }> = {
+    status: { summary: "Check the launcher, adapter, agent entry, provider registration and copilot-api", run: status },
+    repair: {
+      summary: "Rewrite the agent entry from the plugin settings",
+      async run() {
+        try {
+          const changed = await sync();
+          return { exitCode: 0, stdout: `${PLUGIN_ID}: ${changed ? "repaired" : "already up to date"}\n` };
+        } catch (error) {
+          return fail(error);
+        }
+      },
+    },
+    unregister: {
+      summary: "Remove the agent entry before removing the plugin",
+      async run() {
+        try {
+          const changed = await unregisterAgent(bb);
+          return {
+            exitCode: 0,
+            stdout: `${PLUGIN_ID}: ${changed ? "unregistered; remove the plugin now, or reload it to register again" : "not registered"}\n`,
+          };
+        } catch (error) {
+          return fail(error);
+        }
+      },
+    },
+    login: {
+      summary: "Sign in to GitHub Copilot (device code)",
+      async run() {
+        const state = await startLogin();
+        if (state.userCode && state.url) {
+          return { exitCode: 0, stdout: `Open ${state.url} and enter the code ${state.userCode}\nThen run: bb ${PLUGIN_ID} status\n` };
+        }
+        return { exitCode: 1, stderr: `${state.message ?? "Could not start the GitHub sign-in."}\n` };
+      },
+    },
+    logout: {
+      summary: "Sign out of GitHub Copilot",
+      run: async () => ({ exitCode: 0, stdout: (await signOut()) ? "Signed out.\n" : "Was not signed in.\n" }),
+    },
+    start: {
+      summary: "Start copilot-api",
+      async run() {
+        const started = await start();
+        return { exitCode: started.running ? 0 : 1, stdout: show({ ...(await appStatus()), error: started.error }) };
+      },
+    },
+    stop: {
+      summary: "Stop copilot-api",
+      run: async () => ({ exitCode: 0, stdout: (await stop(await dataDir())) ? "Stopped.\n" : "Not running.\n" }),
+    },
+  };
 
   bb.cli.register({
     name: PLUGIN_ID,
-    summary: `Manage the ${DISPLAY_NAME} agent's copilot-api`,
-    commands: [
-      { name: "status", summary: "Show copilot-api state", usage: `bb ${PLUGIN_ID} status` },
-      { name: "login", summary: "Sign in to GitHub Copilot", usage: `bb ${PLUGIN_ID} login` },
-      { name: "logout", summary: "Sign out of GitHub Copilot", usage: `bb ${PLUGIN_ID} logout` },
-      { name: "start", summary: "Start copilot-api", usage: `bb ${PLUGIN_ID} start` },
-      { name: "stop", summary: "Stop copilot-api", usage: `bb ${PLUGIN_ID} stop` },
-    ],
+    summary: `Check, repair or remove the ${DISPLAY_NAME} agent entry, and manage its copilot-api.`,
+    commands: Object.entries(commands).map(([name, { summary }]) => ({ name, summary, usage: `${PLUGIN_ID} ${name}` })),
     async run(argv) {
-      const [command] = argv;
-      switch (command) {
-        case "status":
-          return { exitCode: 0, stdout: show(await appStatus()) };
-        case "start": {
-          const status = await start();
-          return { exitCode: status.running ? 0 : 1, stdout: show({ ...(await appStatus()), error: status.error }) };
-        }
-        case "stop":
-          return { exitCode: 0, stdout: (await stop(await dataDir())) ? "Stopped." : "Not running." };
-        case "logout":
-          return { exitCode: 0, stdout: (await signOut()) ? "Signed out." : "Was not signed in." };
-        case "login": {
-          const state = await startLogin();
-          if (state.userCode && state.url) {
-            return { exitCode: 0, stdout: `Open ${state.url} and enter the code ${state.userCode}\nThen run: bb ${PLUGIN_ID} status` };
-          }
-          return { exitCode: 1, stderr: state.message ?? "Could not start the GitHub sign-in." };
-        }
-        default:
-          return { exitCode: command ? 1 : 0, stdout: usage };
-      }
+      const name = argv[0] ?? "status";
+      const command = Object.hasOwn(commands, name) ? commands[name] : undefined;
+      if (command) return command.run();
+      return { exitCode: 2, stderr: `Unknown subcommand "${name}". Use: bb ${PLUGIN_ID} ${Object.keys(commands).join(" | ")}\n` };
     },
   });
 }

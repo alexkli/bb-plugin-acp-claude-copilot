@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
+import { cleanEnv } from "./fixtures/env.mjs";
 import {
   isPlanApprovalRequest,
   planApprovalQuestion,
@@ -126,14 +127,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   chmodSync(fakeBb, 0o755);
   const storageDir = join(dir, "thread-storage");
   const proxy = spawn(process.execPath, [join(import.meta.dirname, "..", "bin", "claude-copilot-acp-proxy.mjs"), process.execPath, agent], {
-    env: {
-      ...process.env,
+    env: cleanEnv(dir, {
       XDG_STATE_HOME: dir,
       BB_CLI: fakeBb,
       BB_THREAD_ID: "thr_test",
       BB_ENVIRONMENT_ID: "env_test",
       BB_THREAD_STORAGE: storage ? storageDir : "",
-    },
+    }),
     stdio: ["pipe", "pipe", "inherit"],
   });
   const received = [];

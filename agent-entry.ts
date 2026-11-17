@@ -36,10 +36,24 @@ export const MANAGED_ENV = [
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   "CLAUDE_COPILOT_ALL_MODELS",
   "CLAUDE_AGENT_ACP",
+  "CLAUDE_COPILOT_SANDBOX",
 ] as const;
 export type ManagedEnv = Partial<Record<(typeof MANAGED_ENV)[number], string>>;
 
-/** The managed entry: our command, name and env; the user's other env and fields are kept. */
+/**
+ * bb's permission mode, passed to the launcher on every start (bb restarts the
+ * agent when a thread's mode changes). The proxy turns on the Bash sandbox in
+ * Accept Edits, as bb's Claude Code provider does; see bin/acp-session.mjs.
+ */
+export const PERMISSION_CLI = {
+  full: ["--bb-permission-mode=full"],
+  workspaceWrite: ["--bb-permission-mode=accept-edits"],
+};
+
+/**
+ * The managed entry: our command, name, env and capabilities; the user's other
+ * env and fields are kept.
+ */
 export function managedAgent(launcher: string, managedEnv: ManagedEnv, existing?: CustomAgent): CustomAgent {
   const env: Record<string, unknown> = { ...(isObject(existing?.env) ? existing.env : {}) };
   for (const name of MANAGED_ENV) delete env[name];
@@ -52,6 +66,9 @@ export function managedAgent(launcher: string, managedEnv: ManagedEnv, existing?
     command: launcher,
     args: [],
     env,
+    permissionCli: PERMISSION_CLI,
+    // claude-agent-acp runs Claude Code's /compact
+    supportsManualCompaction: true,
   };
 }
 
@@ -61,6 +78,25 @@ export function withManagedAgent(agents: CustomAgent[], launcher: string, manage
   const next = managedAgent(launcher, managedEnv, index >= 0 ? agents[index] : undefined);
   if (index >= 0 && JSON.stringify(agents[index]) === JSON.stringify(next)) return null;
   return index >= 0 ? agents.map((agent, i) => (i === index ? next : agent)) : [...agents, next];
+}
+
+/** The customAgents list without our entry; null when it has none. */
+export function withoutManagedAgent(agents: CustomAgent[]): CustomAgent[] | null {
+  const next = agents.filter((agent) => agent.id !== AGENT_ID);
+  return next.length === agents.length ? null : next;
+}
+
+/** Our entry in the ACP agents plugin's settings, or null when that plugin's settings can't be read. */
+export async function readCurrentEntry(bb: BbPluginApi): Promise<{ entry: CustomAgent | undefined } | null> {
+  const agents = await readAgents(bb);
+  return agents === null ? null : { entry: agents.find((agent) => agent.id === AGENT_ID) };
+}
+
+async function writeAgents(bb: BbPluginApi, agents: CustomAgent[]): Promise<void> {
+  await bb.sdk.plugins.updateSettings({
+    pluginId: ACP_PLUGIN_ID,
+    values: { customAgents: agents.length === 0 ? "" : `${JSON.stringify(agents, null, 2)}\n` },
+  });
 }
 
 async function readAgents(bb: BbPluginApi): Promise<CustomAgent[] | null> {
@@ -90,10 +126,23 @@ export async function provisionAgent(bb: BbPluginApi, launcher: string, managedE
 
   const updated = withManagedAgent(agents, launcher, managedEnv);
   if (updated === null) return false;
-  await bb.sdk.plugins.updateSettings({
-    pluginId: ACP_PLUGIN_ID,
-    values: { customAgents: `${JSON.stringify(updated, null, 2)}\n` },
-  });
+  await writeAgents(bb, updated);
   bb.log.info(`Updated the ${DISPLAY_NAME} (${AGENT_ID}) agent entry`);
+  return true;
+}
+
+/**
+ * Removes our entry from the ACP agents plugin's settings, leaving other agents
+ * alone. bb has no uninstall hook, so `bb acp-claude-copilot unregister` runs
+ * this before the plugin is removed; the next load or settings change adds the
+ * entry again.
+ */
+export async function unregisterAgent(bb: BbPluginApi): Promise<boolean> {
+  const agents = await readAgents(bb);
+  if (agents === null) throw new Error(`the ${ACP_PLUGIN_ID} plugin's settings are not available`);
+  const updated = withoutManagedAgent(agents);
+  if (updated === null) return false;
+  await writeAgents(bb, updated);
+  bb.log.info(`Removed the ${DISPLAY_NAME} (${AGENT_ID}) agent entry`);
   return true;
 }
